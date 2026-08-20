@@ -4,12 +4,12 @@ import { getFirestore, collection, query, where, onSnapshot } from 'https://www.
 import { getStorage, ref, uploadBytes } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-storage.js';
 
 const firebaseConfig = {
-  apiKey: 'REPLACE_ME',
-  authDomain: 'REPLACE_ME.firebaseapp.com',
-  projectId: 'REPLACE_ME',
-  storageBucket: 'REPLACE_ME.firebasestorage.app',
-  messagingSenderId: 'REPLACE_ME',
-  appId: 'REPLACE_ME'
+  apiKey: 'AIzaSyDUFcQC1ZE1x8SHJhffLpp1FmE082rrc3k',
+  authDomain: 'reporte-c9c78.firebaseapp.com',
+  projectId: 'reporte-c9c78',
+  storageBucket: 'reporte-c9c78.firebasestorage.app',
+  messagingSenderId: '332419212982',
+  appId: '1:332419212982:web:4bcedf0fb8c25c75fba817'
 };
 
 const app = initializeApp(firebaseConfig);
