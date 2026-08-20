@@ -2,12 +2,14 @@ const CONFIG = {
   REPORT_SPREADSHEET_ID: '1082Ol2ib76P943KZsNVBtRZF_Ia2xoIExnYdYj8AOB8',
   LOG_SPREADSHEET_ID: '1Hh-SaxsOQaBRadK7M1k-FWehlbi_s5CvZDAsluSF4ZU',
   EMAIL_SHEET: 'EMAIL',
+  DOCUMENT_SHEET: 'DOCUMENTOS',
   INFRA_SHEET: 'INFRA_LOG',
   RESCUES_SHEET: 'RESCUES_LOG',
   DATA_SHEET: '_REPORT_DATA',
   UPLOAD_SHEET: '_UPLOADS',
   SEND_SHEET: '_SEND_LOG',
   STATIONS: ['DJX3', 'DJX4'],
+  REQUIRED_DOCS: ['OVERVIEW','SAFETY','CDF','DSB','PSB','DVIC'],
   POINTS: {
     PACKAGE: 0.15,
     RESCUE: 0.15,
@@ -31,12 +33,15 @@ function doGet() {
 function getBootstrapData() {
   ensureStorage_();
   const week = getLatestWeek_();
+  if (week) syncDocumentChecklist_(week);
   return buildDashboard_(week);
 }
 
 function getDashboard(week) {
   ensureStorage_();
-  return buildDashboard_(week || getLatestWeek_());
+  const selectedWeek = week || getLatestWeek_();
+  if (selectedWeek) syncDocumentChecklist_(selectedWeek);
+  return buildDashboard_(selectedWeek);
 }
 
 function uploadReportFile(payload) {
@@ -44,9 +49,9 @@ function uploadReportFile(payload) {
   if (!payload || !payload.name || !payload.base64) throw new Error('Archivo inválido.');
 
   const meta = detectFileMeta_(payload.name);
-  if (!meta.station) throw new Error('No pude identificar DJX3 o DJX4 en el nombre del archivo.');
-  if (!meta.week) throw new Error('No pude identificar la semana (ej. 2026-W33) en el nombre del archivo.');
-  if (!meta.type) throw new Error('No pude identificar el tipo de documento por el nombre del archivo.');
+  if (!meta.station) throw new Error('Archivo rechazado: el nombre debe indicar DJX3 o DJX4.');
+  if (!meta.week) throw new Error('Archivo rechazado: no pude identificar la semana (ej. 2026-W33).');
+  if (!meta.type) throw new Error('Archivo rechazado: no corresponde a OVERVIEW, SAFETY, CDF, DSB, PSB o DVIC.');
 
   const bytes = Utilities.base64Decode(payload.base64);
   const blob = Utilities.newBlob(bytes, payload.mimeType || 'application/octet-stream', payload.name);
@@ -66,12 +71,17 @@ function uploadReportFile(payload) {
     }
 
     if (!rows || rows.length < 2) throw new Error('El archivo no contiene datos suficientes.');
+    const validation = validateUploadedFile_(rows, meta);
+    if (!validation.ok) throw new Error('Archivo incorrecto para ' + meta.type + ' ' + meta.station + ': ' + validation.message);
+
     const normalized = normalizeUploadedRows_(rows, meta);
     replaceSourceData_(meta, normalized);
-    recordUpload_(meta, payload.name, normalized.length, 'LOADED');
+    recordUpload_(meta, payload.name, normalized.length, 'LOADED', '');
+    updateDocumentChecklistRow_(meta, 'LOADED', payload.name, validation.message);
     return buildDashboard_(meta.week);
   } catch (err) {
     recordUpload_(meta, payload.name, 0, 'ERROR', err.message);
+    updateDocumentChecklistRow_(meta, 'ERROR', payload.name, err.message);
     throw err;
   } finally {
     if (tempId) {
@@ -115,7 +125,7 @@ function sendDriverReports(request) {
 
 function buildDashboard_(week) {
   const weeks = getWeeks_();
-  if (!week) return {week: '', weeks: weeks, uploads: [], stations: {}, home: emptyHome_()};
+  if (!week) return {week: '', weeks: weeks, uploads: uploadStatus_(''), stations: {}, home: emptyHome_(), totals:{drivers:0,sent:0,pending:0}};
 
   const data = readData_(week);
   const logs = readOperationalLogs_(week);
@@ -181,7 +191,7 @@ function normalizeUploadedRows_(rows, meta) {
       headers.forEach(function(h, i) {
         if (!h || ignored.indexOf(h) !== -1) return;
         if (isTruthyFlag_(row[i])) {
-          out.push(baseRecord_(meta, driverKey, name, transporterId, 'COMPLAINT', date, headers[0] ? originalHeader_(rows[0][i]) : h, {details: details}));
+          out.push(baseRecord_(meta, driverKey, name, transporterId, 'COMPLAINT', date, originalHeader_(rows[0][i]), {details: details}));
         }
       });
       return;
@@ -408,6 +418,7 @@ function ensureStorage_() {
   ensureSheet_(ss, CONFIG.DATA_SHEET, ['Week','Station','SourceType','DriverKey','DriverName','TransporterID','Kind','Date','Label','ExtraJSON']);
   ensureSheet_(ss, CONFIG.UPLOAD_SHEET, ['Timestamp','Week','Station','SourceType','FileName','Rows','Status','Error']);
   ensureSheet_(ss, CONFIG.SEND_SHEET, ['Timestamp','Week','DriverKey','DriverName','Email']);
+  ensureDocumentSheet_(ss);
 }
 
 function ensureSheet_(ss, name, headers) {
@@ -416,6 +427,76 @@ function ensureSheet_(ss, name, headers) {
   if (sh.getLastRow() === 0) sh.getRange(1,1,1,headers.length).setValues([headers]);
   sh.hideSheet();
   return sh;
+}
+
+function ensureDocumentSheet_(ss) {
+  let sh = ss.getSheetByName(CONFIG.DOCUMENT_SHEET);
+  if (!sh) sh = ss.insertSheet(CONFIG.DOCUMENT_SHEET, 1);
+  const headers = ['Station','Document','Status','Week','File','Loaded At','Validation','Required'];
+  if (sh.getLastRow() === 0) sh.getRange(1,1,1,headers.length).setValues([headers]);
+  const existing = {};
+  if (sh.getLastRow() > 1) sh.getRange(2,1,sh.getLastRow()-1,2).getDisplayValues().forEach(function(r){ existing[r[0]+'|'+r[1]] = true; });
+  const add = [];
+  CONFIG.STATIONS.forEach(function(st){ CONFIG.REQUIRED_DOCS.forEach(function(type){ if (!existing[st+'|'+type]) add.push([st,type,'🟡 PENDIENTE','','','','Esperando archivo',true]); }); });
+  if (add.length) sh.getRange(sh.getLastRow()+1,1,add.length,8).setValues(add);
+  sh.showSheet();
+  sh.setFrozenRows(1);
+  sh.getRange(1,1,1,8).setFontWeight('bold').setBackground('#111827').setFontColor('#ffffff');
+  sh.autoResizeColumns(1,8);
+  return sh;
+}
+
+function validateUploadedFile_(rows, meta) {
+  const headers = rows[0].map(cleanHeader_);
+  const has = function(names){ return names.some(function(n){ return headers.indexOf(cleanHeader_(n)) !== -1; }); };
+  const missing = [];
+  const requireOne = function(label, names){ if (!has(names)) missing.push(label); };
+
+  requireOne('identificador del driver', ['delivery associate','driver','transporter name','transporter_name','transporter id','transporterid','transporter_id']);
+  if (meta.type === 'OVERVIEW') {
+    requireOne('Overall Score', ['overall score']);
+    requireOne('Packages Delivered', ['packages delivered']);
+  } else if (meta.type === 'SAFETY') {
+    requireOne('fecha de infracción', ['date station local time','date (station local time)','date']);
+    requireOne('Metric Type', ['metric type']);
+  } else if (meta.type === 'CDF') {
+    requireOne('Delivery Date', ['delivery date','date']);
+  } else if (meta.type === 'DSB') {
+    requireOne('Impacts Scorecard', ['impacts scorecard']);
+  } else if (meta.type === 'PSB') {
+    requireOne('Failed Stops', ['failed stops']);
+  } else if (meta.type === 'DVIC') {
+    requireOne('fecha DVIC', ['start date','start_date','date']);
+    requireOne('Duration', ['duration']);
+  }
+
+  if (missing.length) return {ok:false, message:'faltan columnas requeridas: ' + missing.join(', ') + '. Se valida por el nombre del encabezado en la fila 1.'};
+  return {ok:true, message:'Validado por encabezados de la fila 1'};
+}
+
+function updateDocumentChecklistRow_(meta, status, filename, validation) {
+  if (!meta || !meta.station || !meta.type) return;
+  const ss = SpreadsheetApp.openById(CONFIG.REPORT_SPREADSHEET_ID);
+  const sh = ensureDocumentSheet_(ss);
+  const vals = sh.getRange(2,1,Math.max(1,sh.getLastRow()-1),8).getValues();
+  for (let i=0;i<vals.length;i++) {
+    if (String(vals[i][0]) === meta.station && String(vals[i][1]) === meta.type) {
+      const display = status === 'LOADED' ? '✅ CARGADO' : status === 'ERROR' ? '🔴 ERROR' : '🟡 PENDIENTE';
+      sh.getRange(i+2,3,1,5).setValues([[display,meta.week||'',filename||'',status==='LOADED'?new Date():'',validation||'']]);
+      return;
+    }
+  }
+}
+
+function syncDocumentChecklist_(week) {
+  if (!week) return;
+  const statuses = uploadStatus_(week);
+  const ss = SpreadsheetApp.openById(CONFIG.REPORT_SPREADSHEET_ID);
+  const sh = ensureDocumentSheet_(ss);
+  statuses.forEach(function(u){
+    const meta = {station:u.station,type:u.type,week:week};
+    updateDocumentChecklistRow_(meta, u.status === 'loaded' ? 'LOADED' : 'PENDING', u.file || '', u.error || (u.status === 'loaded' ? 'Validado y cargado' : 'Esperando archivo'));
+  });
 }
 
 function replaceSourceData_(meta, records) {
@@ -446,11 +527,16 @@ function recordUpload_(meta, filename, rows, status, error) {
 function recordSend_(week,key,name,email){SpreadsheetApp.openById(CONFIG.REPORT_SPREADSHEET_ID).getSheetByName(CONFIG.SEND_SHEET).appendRow([new Date(),week,key,name,email]);}
 
 function uploadStatus_(week) {
-  const required = ['OVERVIEW','SAFETY','CDF','DSB','PSB','DVIC'];
   const sh = SpreadsheetApp.openById(CONFIG.REPORT_SPREADSHEET_ID).getSheetByName(CONFIG.UPLOAD_SHEET);
   const latest={};
-  if (sh && sh.getLastRow()>1) sh.getRange(2,1,sh.getLastRow()-1,8).getValues().forEach(function(r){if(String(r[1])===week) latest[r[2]+'|'+r[3]]={file:r[4],rows:r[5],status:r[6],error:r[7],timestamp:r[0]};});
-  const out=[]; CONFIG.STATIONS.forEach(function(st){required.forEach(function(type){const x=latest[st+'|'+type];out.push({station:st,type:type,status:x&&x.status==='LOADED'?'loaded':'pending',file:x?x.file:'',rows:x?x.rows:0,error:x?x.error:''});});});
+  if (week && sh && sh.getLastRow()>1) sh.getRange(2,1,sh.getLastRow()-1,8).getValues().forEach(function(r){if(String(r[1])===week) latest[r[2]+'|'+r[3]]={file:r[4],rows:r[5],status:r[6],error:r[7],timestamp:r[0]};});
+  const out=[];
+  CONFIG.STATIONS.forEach(function(st){
+    CONFIG.REQUIRED_DOCS.forEach(function(type){
+      const x=latest[st+'|'+type];
+      out.push({station:st,type:type,status:x&&x.status==='LOADED'?'loaded':'pending',file:x?x.file:'',rows:x?x.rows:0,error:x&&x.status==='ERROR'?x.error:'',validated:!!(x&&x.status==='LOADED')});
+    });
+  });
   return out;
 }
 
