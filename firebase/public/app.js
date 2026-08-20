@@ -1,5 +1,5 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js';
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js';
 import { getFirestore, collection, query, where, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
 import { getStorage, ref, uploadBytes } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-storage.js';
 
@@ -16,7 +16,6 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app);
-const provider = new GoogleAuthProvider();
 const docs = ['OVERVIEW','SAFETY','CDF','DSB','PSB','DVIC'];
 let selectedSlot = null;
 let unsubUploads = null;
@@ -25,15 +24,19 @@ const weekEl = document.getElementById('week');
 weekEl.value = isoWeek(new Date());
 
 document.querySelectorAll('.nav button').forEach(btn=>btn.addEventListener('click',()=>showPage(btn.dataset.page)));
-document.getElementById('signIn').addEventListener('click',()=>signInWithPopup(auth,provider).catch(e=>toast(e.message)));
+document.getElementById('addFiles').addEventListener('click',()=>{
+  showPage('uploads');
+  toast('Selecciona el documento que quieres cargar');
+});
 document.getElementById('fileInput').addEventListener('change',handleFile);
 weekEl.addEventListener('change',watchUploads);
 
 onAuthStateChanged(auth,user=>{
-  document.getElementById('signIn').textContent = user ? user.email : 'Entrar con Google';
   renderUploadGrid({});
   if (user) watchUploads();
 });
+
+signInAnonymously(auth).catch(e=>toast('No pude iniciar la sesión automática: '+e.message));
 
 function showPage(page){
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
@@ -60,7 +63,7 @@ function renderUploadGrid(map){
   const root=document.getElementById('uploadGrid');
   root.innerHTML=['DJX3','DJX4'].map(st=>`<div class="station"><h3>${st}</h3>${docs.map(type=>uploadRow(st,type,map[`${st}_${type}`])).join('')}</div>`).join('');
   root.querySelectorAll('[data-upload]').forEach(el=>el.addEventListener('click',()=>{
-    if(!auth.currentUser){toast('Primero entra con Google');return;}
+    if(!auth.currentUser){toast('Preparando acceso... intenta de nuevo en un segundo');return;}
     selectedSlot={station:el.dataset.station,type:el.dataset.type};
     document.getElementById('fileInput').click();
   }));
