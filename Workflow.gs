@@ -1,3 +1,17 @@
+function getBootstrapData() {
+  ensureStorage_();
+  const week = getLatestWeek_();
+  if (week) syncDocumentChecklist_(week);
+  return {
+    week: week || '',
+    weeks: getWeeks_(),
+    uploads: uploadStatus_(week || ''),
+    stations: {DJX3:[], DJX4:[]},
+    home: emptyHome_(),
+    totals: {drivers:0, sent:0, pending:0}
+  };
+}
+
 function uploadReportFileFast(payload) {
   ensureStorage_();
   if (!payload || !payload.name || !payload.base64) throw new Error('Archivo inválido.');
@@ -27,10 +41,13 @@ function uploadReportFileFast(payload) {
 
     const normalized = normalizeUploadedRows_(rows, meta);
     replaceSourceData_(meta, normalized);
-    const archived = archiveWeeklyFile_(blob, meta, payload.name);
     recordUpload_(meta, payload.name, normalized.length, 'LOADED', '');
     updateDocumentChecklistRow_(meta, 'LOADED', payload.name, validation.message);
     syncDocumentChecklist_(meta.week);
+
+    if (typeof archiveUploadedBlob_ === 'function') {
+      try { archiveUploadedBlob_(blob, meta); } catch (archiveErr) { Logger.log('Archive error: ' + archiveErr.message); }
+    }
 
     return {
       ok:true,
@@ -38,8 +55,7 @@ function uploadReportFileFast(payload) {
       station:meta.station,
       type:meta.type,
       uploads:uploadStatus_(meta.week),
-      weeks:getWeeks_(),
-      archivedFileId:archived.id
+      weeks:getWeeks_()
     };
   } catch (err) {
     recordUpload_(meta, payload.name, 0, 'ERROR', err.message);
@@ -58,19 +74,4 @@ function generateReports(request) {
   if (!week) throw new Error('Primero carga documentos de una semana.');
   syncDocumentChecklist_(week);
   return buildDashboard_(week);
-}
-
-function archiveWeeklyFile_(blob, meta, originalName) {
-  const root = getOrCreateFolder_('REPORTE APP - ARCHIVO SEMANAL', DriveApp.getRootFolder());
-  const weekFolder = getOrCreateFolder_(meta.week, root);
-  const stationFolder = getOrCreateFolder_(meta.station, weekFolder);
-  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/New_York', 'yyyyMMdd_HHmmss');
-  const safeName = meta.type + '__' + stamp + '__' + originalName;
-  const copy = blob.copyBlob().setName(safeName);
-  return stationFolder.createFile(copy);
-}
-
-function getOrCreateFolder_(name, parent) {
-  const it = parent.getFoldersByName(name);
-  return it.hasNext() ? it.next() : parent.createFolder(name);
 }
