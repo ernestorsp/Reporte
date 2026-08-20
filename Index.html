@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root{--bg:#f5f7fb;--card:#fff;--text:#101828;--muted:#667085;--line:#e4e7ec;--brand:#111827;--green:#16a34a;--yellow:#eab308;--red:#dc2626;--blue:#2563eb}
+    *{box-sizing:border-box}body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:var(--text)}button,input,select{font:inherit}
+    .app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}.sidebar{background:#111827;color:#fff;padding:24px 16px;position:sticky;top:0;height:100vh}.brand{font-size:20px;font-weight:800;padding:4px 10px 28px}.nav{display:grid;gap:8px}.nav button{border:0;background:transparent;color:#cbd5e1;text-align:left;padding:12px 14px;border-radius:10px;cursor:pointer}.nav button.active,.nav button:hover{background:#1f2937;color:#fff}.main{padding:28px;min-width:0}.topbar{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:24px}.title h1{margin:0;font-size:28px}.title p{margin:5px 0 0;color:var(--muted)}.actions{display:flex;gap:10px;align-items:center}.select{padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}.primary{border:0;background:var(--brand);color:#fff;border-radius:10px;padding:11px 16px;font-weight:700;cursor:pointer}.primary:disabled{opacity:.45;cursor:not-allowed}.secondary{border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 14px;cursor:pointer}.grid{display:grid;gap:16px}.grid-2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 1px 2px rgba(16,24,40,.04)}.card h3{margin:0 0 14px;font-size:16px}.metric{font-size:30px;font-weight:800}.muted{color:var(--muted)}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}.dot.green{background:var(--green)}.dot.yellow{background:var(--yellow)}.dot.red{background:var(--red)}.upload-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.upload-row{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:#fff}.upload-left{display:flex;gap:10px;align-items:center}.upload-meta{font-size:12px;color:var(--muted);margin-top:3px}.plus{width:46px;height:46px;border-radius:50%;border:0;background:#111827;color:#fff;font-size:28px;line-height:1;cursor:pointer;box-shadow:0 5px 18px rgba(17,24,39,.18)}table{width:100%;border-collapse:collapse}.table-wrap{overflow:auto}th,td{padding:12px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}th{font-size:12px;text-transform:uppercase;color:var(--muted);letter-spacing:.04em}.badge{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:800}.Fantastic{background:#dcfce7;color:#166534}.Great{background:#dbeafe;color:#1d4ed8}.Fair{background:#fef3c7;color:#92400e}.Poor{background:#fee2e2;color:#991b1b}.sent{color:var(--green);font-weight:800}.tiny{font-size:12px;color:var(--muted)}.rank-list{display:grid;gap:10px}.rank-row{display:grid;grid-template-columns:32px 1fr auto;align-items:center;gap:8px}.rank{width:28px;height:28px;border-radius:8px;background:#f2f4f7;display:grid;place-items:center;font-weight:800;font-size:12px}.page{display:none}.page.active{display:block}.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}.search{min-width:250px;padding:10px 12px;border:1px solid var(--line);border-radius:10px}.driver-name{font-weight:700}.error{color:var(--red)}.toast{position:fixed;right:24px;bottom:24px;background:#111827;color:white;padding:12px 16px;border-radius:10px;display:none;max-width:380px}.loading{opacity:.55;pointer-events:none}.empty{padding:32px;text-align:center;color:var(--muted)}
+    @media(max-width:900px){.app{grid-template-columns:1fr}.sidebar{height:auto;position:static}.nav{grid-template-columns:repeat(4,1fr)}.brand{padding-bottom:14px}.main{padding:18px}.grid-2,.grid-3,.upload-list{grid-template-columns:1fr}.topbar{align-items:flex-start;flex-direction:column}}
+  </style>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="sidebar">
+    <div class="brand">REPORTE</div>
+    <div class="nav">
+      <button data-page="home" class="active">Home</button>
+      <button data-page="uploads">+ Archivos</button>
+      <button data-page="DJX3">DJX3</button>
+      <button data-page="DJX4">DJX4</button>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <div class="title"><h1 id="pageTitle">Home</h1><p id="pageSubtitle">Resumen semanal de drivers</p></div>
+      <div class="actions"><select id="weekSelect" class="select"></select><button class="secondary" onclick="refresh()">Actualizar</button></div>
+    </div>
+
+    <section class="page active" id="page-home">
+      <div class="grid grid-3" style="margin-bottom:16px">
+        <div class="card"><div class="muted">Drivers</div><div class="metric" id="totalDrivers">0</div></div>
+        <div class="card"><div class="muted">Reportes enviados</div><div class="metric" id="totalSent">0</div></div>
+        <div class="card"><div class="muted">Pendientes</div><div class="metric" id="totalPending">0</div></div>
+      </div>
+      <div id="homeStations" class="grid grid-2"></div>
+    </section>
+
+    <section class="page" id="page-uploads">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:16px">
+          <div><h3 style="margin-bottom:5px">Documentos de la semana</h3><div class="muted">Amarillo = pendiente · Verde = cargado correctamente</div></div>
+          <button class="plus" title="Agregar archivos" onclick="document.getElementById('fileInput').click()">+</button>
+          <input id="fileInput" type="file" multiple accept=".csv,.xls,.xlsx" hidden>
+        </div>
+        <div id="uploadList" class="upload-list"></div>
+      </div>
+    </section>
+
+    <section class="page" id="page-DJX3"><div id="station-DJX3"></div></section>
+    <section class="page" id="page-DJX4"><div id="station-DJX4"></div></section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+let state={week:'',weeks:[],uploads:[],stations:{DJX3:[],DJX4:[]},home:{},totals:{drivers:0,sent:0,pending:0}};
+let currentPage='home';
+
+document.querySelectorAll('.nav button').forEach(b=>b.addEventListener('click',()=>showPage(b.dataset.page)));
+document.getElementById('weekSelect').addEventListener('change',e=>loadWeek(e.target.value));
+document.getElementById('fileInput').addEventListener('change',handleFiles);
+
+function init(){setBusy(true);google.script.run.withSuccessHandler(d=>{state=d;render();setBusy(false)}).withFailureHandler(fail).getBootstrapData()}
+function refresh(){loadWeek(state.week)}
+function loadWeek(week){setBusy(true);google.script.run.withSuccessHandler(d=>{state=d;render();setBusy(false)}).withFailureHandler(fail).getDashboard(week)}
+function showPage(page){currentPage=page;document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+page).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.page===page));document.getElementById('pageTitle').textContent=page==='home'?'Home':page==='uploads'?'Archivos':page;document.getElementById('pageSubtitle').textContent=page==='home'?'Resumen semanal de drivers':page==='uploads'?'Carga y validación de documentos':'Drivers y envío de reportes'}
+function render(){renderWeeks();renderTotals();renderUploads();renderHome();renderStation('DJX3');renderStation('DJX4');showPage(currentPage)}
+function renderWeeks(){const s=document.getElementById('weekSelect');s.innerHTML=(state.weeks||[]).map(w=>`<option ${w===state.week?'selected':''}>${esc(w)}</option>`).join('');if(!state.weeks.length)s.innerHTML='<option>Sin semana cargada</option>'}
+function renderTotals(){document.getElementById('totalDrivers').textContent=state.totals?.drivers||0;document.getElementById('totalSent').textContent=state.totals?.sent||0;document.getElementById('totalPending').textContent=state.totals?.pending||0}
+function renderUploads(){const el=document.getElementById('uploadList');el.innerHTML=(state.uploads||[]).map(u=>`<div class="upload-row"><div class="upload-left"><span class="dot ${u.status==='loaded'?'green':'yellow'}"></span><div><b>${esc(u.station)} · ${esc(labelType(u.type))}</b><div class="upload-meta">${u.file?esc(u.file)+' · '+u.rows+' registros':'Pendiente de cargar'}</div>${u.error?`<div class="upload-meta error">${esc(u.error)}</div>`:''}</div></div><div class="tiny">${u.status==='loaded'?'Listo':'Pendiente'}</div></div>`).join('')||'<div class="empty">Carga el primer archivo para crear la semana.</div>'}
+function renderHome(){const root=document.getElementById('homeStations');root.innerHTML=['DJX3','DJX4'].map(st=>{const h=state.home?.[st]||{top:[],complaints:[],rescues:[]};return `<div class="grid"><div class="card"><h3>${st} · Top drivers</h3>${rankHtml(h.top,d=>`${d.points} pts · ${d.category}`)}</div><div class="card"><h3>${st} · Más complaints</h3>${rankHtml(h.complaints,d=>`${d.complaints.length} complaints`)}</div><div class="card"><h3>${st} · Más rescates recibidos</h3>${rankHtml(h.rescues,d=>`${d.count} rescates · ${d.volume} stops+pkgs`)}</div></div>`}).join('')}
+function rankHtml(items,detail){return `<div class="rank-list">${(items||[]).map((d,i)=>`<div class="rank-row"><div class="rank">${i+1}</div><div><b>${esc(d.name)}</b></div><div class="tiny">${esc(detail(d))}</div></div>`).join('')||'<div class="empty">Sin datos</div>'}</div>`}
+function renderStation(st){const list=state.stations?.[st]||[];const root=document.getElementById('station-'+st);root.innerHTML=`<div class="card"><div class="toolbar"><input class="search" id="search-${st}" placeholder="Buscar driver..." oninput="filterStation('${st}')"><button class="primary" id="sendSelected-${st}" onclick="sendSelected('${st}')">Enviar reportes seleccionados</button><span class="tiny">${list.length} drivers</span></div><div class="table-wrap"><table><thead><tr><th><input type="checkbox" onchange="toggleAll('${st}',this.checked)"></th><th>Driver</th><th>Categoría</th><th>Puntos</th><th>Paquetes</th><th>Complaints</th><th>Safety</th><th>DSB</th><th>Pickups</th><th>DVIC</th><th>Estado</th><th></th></tr></thead><tbody id="tbody-${st}">${stationRows(list,st)}</tbody></table></div></div>`}
+function stationRows(list,st){return list.map(d=>`<tr data-name="${escAttr(d.name.toLowerCase())}"><td><input class="pick-${st}" type="checkbox" value="${escAttr(d.driverKey)}" ${d.sent?'disabled':''}></td><td><div class="driver-name">${esc(d.name)}</div><div class="tiny">${esc(d.email||'Sin email')}</div></td><td><span class="badge ${d.category}">${d.category}</span></td><td><b>${d.points}</b></td><td>${d.packages||0}</td><td>${d.complaints.length}</td><td>${d.infractions.length}</td><td>${d.dsb.length}</td><td>${d.failedPickups||0}</td><td>${d.dvic.length}</td><td>${d.sent?'<span class="sent">✓ Enviado</span>':'Pendiente'}</td><td><button class="secondary" ${d.sent||!d.email?'disabled':''} onclick="sendOne('${js(d.driverKey)}')">Enviar</button></td></tr>`).join('')||'<tr><td colspan="12" class="empty">No hay drivers cargados para esta estación.</td></tr>'}
+function filterStation(st){const q=document.getElementById('search-'+st).value.toLowerCase();document.querySelectorAll(`#tbody-${st} tr[data-name]`).forEach(r=>r.style.display=r.dataset.name.includes(q)?'':'none')}
+function toggleAll(st,checked){document.querySelectorAll('.pick-'+st+':not(:disabled)').forEach(x=>{if(x.closest('tr').style.display!=='none')x.checked=checked})}
+function sendOne(key){if(!confirm('¿Enviar este reporte ahora?'))return;setBusy(true);google.script.run.withSuccessHandler(()=>{toast('Reporte enviado');loadWeek(state.week)}).withFailureHandler(fail).sendDriverReport({week:state.week,driverKey:key})}
+function sendSelected(st){const keys=[...document.querySelectorAll('.pick-'+st+':checked')].map(x=>x.value);if(!keys.length){toast('Selecciona al menos un driver');return}if(!confirm(`¿Enviar ${keys.length} reporte(s)?`))return;setBusy(true);google.script.run.withSuccessHandler(res=>{state=res.dashboard;render();setBusy(false);const failed=res.results.filter(x=>!x.ok).length;toast(failed?`Enviados con ${failed} error(es)`:'Reportes enviados')}).withFailureHandler(fail).sendDriverReports({week:state.week,driverKeys:keys})}
+async function handleFiles(e){const files=[...e.target.files];e.target.value='';if(!files.length)return;for(const file of files){try{toast('Cargando '+file.name+'...');const base64=await fileToBase64(file);await callServer('uploadReportFile',{name:file.name,mimeType:file.type,base64});}catch(err){toast(err.message||String(err));}}loadWeek(state.week)}
+function fileToBase64(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(file)})}
+function callServer(fn,arg){return new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn](arg))}
+function setBusy(v){document.getElementById('app').classList.toggle('loading',v)}
+function fail(err){setBusy(false);toast(err?.message||String(err))}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';clearTimeout(window.__toast);window.__toast=setTimeout(()=>t.style.display='none',4500)}
+function labelType(x){return({OVERVIEW:'Overview / Packages',SAFETY:'Safety',CDF:'CDF Complaints',DSB:'DSB',PSB:'PSB Pickups',DVIC:'DVIC'})[x]||x}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
+function escAttr(s){return esc(s).replace(/`/g,'&#096;')}
+function js(s){return String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+init();
+</script>
+</body>
+</html>
