@@ -5,7 +5,7 @@ import { getStorage, ref, uploadBytes } from 'https://www.gstatic.com/firebasejs
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js';
 
 const firebaseConfig = {
-  apiKey: 'AIzaSyDUFcQC1ZE1x8SHJhffLpp1FmE082rrc3k',
+  apiKey: 'AIzaSyBhJpu2AQ4AcdAaKcq-U-BfJQlH-oFw_vg',
   authDomain: 'reporte-c9c78.firebaseapp.com',
   projectId: 'reporte-c9c78',
   storageBucket: 'reporte-c9c78.firebasestorage.app',
