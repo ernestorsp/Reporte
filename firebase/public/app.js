@@ -121,7 +121,7 @@ function uploadRow(st,type,status){
   const icon=s==='generated'||s==='uploaded'?'✓':s==='error'?'!':'•';
   const state=s==='generated'?'<span class="ok">✓ Generado</span>':s==='uploaded'?'<span class="ok">✓ Cargado</span>':s==='error'?'<span class="bad">Error</span>':'Pendiente';
   const meta=status?.fileName||(s==='error'?status?.error:'Haz clic para cargar');
-  const del=`<button class="delete-btn" data-delete="1" data-station="${st}" data-type="${type}" ${status?'':'disabled'}>Borrar</button>`;
+  const del=status?`<button class="delete-btn" data-delete="1" data-station="${st}" data-type="${type}" title="Borrar archivo" aria-label="Borrar archivo">🗑</button>`:'';
   return `<div class="row clickable" data-upload="1" data-station="${st}" data-type="${type}"><div class="left"><span class="dot ${cls}">${icon}</span><div><b>${label(type)}</b><div class="small">${escapeHtml(meta||'')}</div></div></div><div class="row-actions"><div class="small">${state}</div>${del}</div></div>`;
 }
 
