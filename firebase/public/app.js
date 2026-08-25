@@ -27,6 +27,29 @@ let bulkMode = false;
 let unsubUploads = null;
 let uploadMap = {};
 
+const authReady = new Promise((resolve, reject) => {
+  let settled = false;
+  const unsub = onAuthStateChanged(auth, user => {
+    if (user && !settled) {
+      settled = true;
+      unsub();
+      resolve(user);
+    }
+  }, err => {
+    if (!settled) {
+      settled = true;
+      reject(err);
+    }
+  });
+  signInAnonymously(auth).catch(err => {
+    if (!settled) {
+      settled = true;
+      unsub();
+      reject(err);
+    }
+  });
+});
+
 const weekEl = document.getElementById('week');
 fillWeekOptions();
 
@@ -42,10 +65,7 @@ document.getElementById('generateReport').addEventListener('click',generateSelec
 document.getElementById('fileInput').addEventListener('change',handleFiles);
 weekEl.addEventListener('change',()=>{ updateWeekText(); watchUploads(); });
 
-onAuthStateChanged(auth,user=>{
-  if (user) watchUploads();
-});
-signInAnonymously(auth).catch(e=>toast('No pude preparar el acceso: '+e.message));
+authReady.then(()=>watchUploads()).catch(e=>toast('No pude preparar el acceso: '+e.message));
 
 function showPage(page){
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
@@ -78,8 +98,8 @@ function updateWeekText(){
   document.getElementById('weekRange').textContent=`Semana seleccionada: ${weekEl.value} · domingo ${longDate(b.start)} → sábado ${longDate(b.end)}`;
 }
 
-function watchUploads(){
-  if (!auth.currentUser) return;
+async function watchUploads(){
+  try { await authReady; } catch { return; }
   if (unsubUploads) unsubUploads();
   const week=weekEl.value;
   const q=query(collection(db,'uploads'),where('week','==',week));
@@ -114,7 +134,13 @@ function uploadRow(st,type,status){
 async function handleFiles(e){
   const files=[...(e.target.files||[])]; e.target.value=''; e.target.multiple=true;
   if(!files.length) return;
-  if(!auth.currentUser){toast('Preparando acceso... intenta otra vez en un segundo');return;}
+  try {
+    toast('Preparando carga...');
+    await authReady;
+  } catch(err) {
+    toast('No pude preparar el acceso: '+(err.message||String(err)));
+    return;
+  }
   const week=weekEl.value;
   const failures=[]; let uploaded=0;
   for(const file of files){
@@ -143,7 +169,8 @@ async function uploadOne(file,week,slot){
 }
 
 async function generateSelectedWeek(){
-  if(!auth.currentUser){toast('Preparando acceso...');return;}
+  try { await authReady; }
+  catch(err){ toast('No pude preparar el acceso: '+(err.message||String(err))); return; }
   const week=weekEl.value;
   const loaded=stations.flatMap(st=>docs.map(type=>uploadMap[`${st}_${type}`])).filter(x=>x && ['uploaded','generated'].includes(x.status)).length;
   if(!loaded){toast('Primero carga los documentos de la semana');return;}
