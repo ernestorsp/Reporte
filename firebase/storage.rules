@@ -1,9 +1,11 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    match /staging/{week}/{station}/{type}/{fileName} {
+      allow read, write: if request.auth != null;
+    }
     match /weekly/{week}/{station}/{type}/{fileName} {
-      allow write: if request.auth != null;
-      allow read: if false;
+      allow read, write: if request.auth != null;
     }
   }
 }
