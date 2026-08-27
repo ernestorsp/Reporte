@@ -1,6 +1,6 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js';
-import { getFirestore, collection, query, where, onSnapshot, doc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
+import { getFirestore, collection, query, where, onSnapshot, getDocs, doc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
 import { getStorage, ref, uploadBytes } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-storage.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js';
 
@@ -27,6 +27,7 @@ let selectedSlot = null;
 let bulkMode = false;
 let unsubUploads = null;
 let uploadMap = {};
+let currentPage = 'home';
 
 const authReady = new Promise((resolve, reject) => {
   let settled = false;
@@ -49,15 +50,17 @@ document.getElementById('addFiles').addEventListener('click',()=>{
 });
 document.getElementById('generateReport').addEventListener('click',generateSelectedWeek);
 document.getElementById('fileInput').addEventListener('change',handleFiles);
-weekEl.addEventListener('change',()=>{ updateWeekText(); watchUploads(); });
+weekEl.addEventListener('change',()=>{ updateWeekText(); watchUploads(); if(stations.includes(currentPage)) loadStationPage(currentPage); });
 authReady.then(()=>watchUploads()).catch(e=>toast('No pude preparar el acceso: '+e.message));
 
 function showPage(page){
+  currentPage=page;
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
   document.getElementById('page-'+page).classList.add('active');
   document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.page===page));
   document.getElementById('title').textContent=page==='home'?'Home':page==='uploads'?'Archivos':page;
   document.getElementById('subtitle').textContent=page==='uploads'?'Carga por semana de Amazon':page==='home'?'Histórico y reportes de drivers':'Drivers y reportes';
+  if(stations.includes(page)) loadStationPage(page);
 }
 
 function fillWeekOptions(){
@@ -109,6 +112,7 @@ function renderUploadGrid(){
       await authReady;
       await deleteUpload({week:weekEl.value,station,type});
       toast(`✓ ${label(type)} de ${station} eliminado.`);
+      if(currentPage===station) loadStationPage(station);
     }catch(err){toast(err.message||String(err));btn.disabled=false;}
   }));
   const ready=stations.flatMap(st=>docs.map(type=>uploadMap[`${st}_${type}`])).filter(x=>x&&['uploaded','generated'].includes(x.status)).length;
@@ -161,10 +165,69 @@ async function generateSelectedWeek(){
   if(!loaded){toast('Primero carga los documentos de la semana');return;}
   if(loaded<12&&!confirm(`Hay ${loaded} de 12 documentos cargados para ${week}. ¿Quieres generar de todas formas?`))return;
   const btn=document.getElementById('generateReport');btn.disabled=true;btn.textContent='Generando...';
-  try{const result=await generateWeek({week});toast(`✓ ${week} generado: ${result.data?.records||0} registros procesados.`);}
+  try{
+    const result=await generateWeek({week});
+    toast(`✓ ${week} generado: ${result.data?.records||0} registros procesados.`);
+    if(stations.includes(currentPage)) await loadStationPage(currentPage);
+  }
   catch(err){toast(err.message||String(err));}
   finally{btn.disabled=false;btn.textContent='Generar reporte';}
 }
+
+async function loadStationPage(station){
+  const root=document.getElementById(`drivers-${station}`);
+  if(!root) return;
+  root.innerHTML='<div class="empty">Cargando drivers...</div>';
+  document.querySelectorAll(`[data-station-week="${station}"]`).forEach(x=>x.textContent=`${weekEl.value} · ${shortDate(amazonWeekBounds(weekEl.value).start)} - ${shortDate(amazonWeekBounds(weekEl.value).end)}`);
+  try{
+    await authReady;
+    const q=query(collection(db,'records'),where('week','==',weekEl.value),where('station','==',station));
+    const snap=await getDocs(q);
+    const records=snap.docs.map(d=>({id:d.id,...d.data()}));
+    const drivers=aggregateDrivers(records);
+    document.querySelectorAll(`[data-station-count="${station}"]`).forEach(x=>x.textContent=`${drivers.length} drivers · ${records.length} registros`);
+    if(!drivers.length){
+      root.innerHTML='<div class="empty">No hay datos generados para esta estación en la semana seleccionada.</div>';
+      return;
+    }
+    root.innerHTML=renderDriverTable(drivers);
+  }catch(err){
+    root.innerHTML=`<div class="empty bad">No pude cargar los drivers: ${escapeHtml(err.message||String(err))}</div>`;
+  }
+}
+
+function aggregateDrivers(records){
+  const map=new Map();
+  for(const r of records){
+    const key=String(r.driverKey||r.transporterId||r.driverName||'').trim();
+    if(!key) continue;
+    if(!map.has(key)) map.set(key,{key,name:r.driverName||'',transporterId:r.transporterId||'',packages:0,overallScore:null,standing:'',complaints:0,infractions:0,pickups:0,dsb:0,dvic:0,records:[]});
+    const d=map.get(key);
+    if(r.driverName&&!d.name)d.name=r.driverName;
+    if(r.transporterId&&!d.transporterId)d.transporterId=r.transporterId;
+    d.records.push(r);
+    if(r.kind==='OVERVIEW'){
+      d.packages=Math.max(d.packages,Number(r.extra?.packages||0));
+      if(r.extra?.overallScore!==undefined)d.overallScore=Number(r.extra.overallScore||0);
+      if(r.extra?.standing)d.standing=String(r.extra.standing);
+    } else if(r.kind==='COMPLAINT') d.complaints++;
+    else if(r.kind==='INFRACTION') d.infractions++;
+    else if(r.kind==='FAILED_PICKUP') d.pickups+=Number(r.extra?.count||1);
+    else if(r.kind==='DSB') d.dsb++;
+    else if(r.kind==='DVIC') d.dvic++;
+  }
+  return [...map.values()].sort((a,b)=>(a.name||a.key).localeCompare(b.name||b.key));
+}
+
+function renderDriverTable(drivers){
+  const rows=drivers.map(d=>{
+    const details=d.records.filter(r=>r.kind!=='OVERVIEW').map(r=>`<span class="detail-pill"><b>${escapeHtml(kindLabel(r.kind))}</b>${r.label?`: ${escapeHtml(r.label)}`:''}${r.date?` · ${escapeHtml(r.date)}`:''}</span>`).join('')||'<span class="muted">Sin incidencias en los documentos generados.</span>';
+    return `<div class="driver-row"><div class="driver-main"><div class="driver-name"><b>${escapeHtml(d.name||d.key)}</b><span>${escapeHtml(d.transporterId||'')}</span></div><div class="metric"><b>${d.packages}</b><span>Paquetes</span></div><div class="metric"><b>${d.complaints}</b><span>Complaints</span></div><div class="metric"><b>${d.infractions}</b><span>Safety</span></div><div class="metric"><b>${d.pickups}</b><span>Pickups</span></div><div class="metric"><b>${d.dsb}</b><span>DSB</span></div><div class="metric"><b>${d.dvic}</b><span>DVIC</span></div><details class="driver-details"><summary>Ver detalle</summary><div class="detail-list">${details}</div></details></div></div>`;
+  }).join('');
+  return `<div class="drivers-table"><div class="drivers-header"><span>Driver</span><span>Paquetes</span><span>Complaints</span><span>Safety</span><span>Pickups</span><span>DSB</span><span>DVIC</span><span>Reporte</span></div>${rows}</div>`;
+}
+
+function kindLabel(kind){return ({COMPLAINT:'Complaint',INFRACTION:'Safety',FAILED_PICKUP:'Pickup',DSB:'DSB',DVIC:'DVIC'})[kind]||kind;}
 
 function detectSlotFromName(name){
   const s=String(name||'').toLowerCase();
@@ -187,6 +250,6 @@ function shortDate(d){return d.toLocaleDateString('en-US',{month:'short',day:'nu
 function longDate(d){return d.toLocaleDateString('es-US',{month:'short',day:'numeric',year:'numeric'});}
 function label(x){return({OVERVIEW:'Overview / Packages',SAFETY:'Safety',CDF:'CDF Complaints',DSB:'DSB',PSB:'PSB Pickups',DVIC:'DVIC'})[x]||x;}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';clearTimeout(window.__toast);window.__toast=setTimeout(()=>t.style.display='none',5500);}
-function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[c]));}
 
 renderUploadGrid();
