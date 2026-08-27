@@ -9,12 +9,9 @@ const { parse } = require('csv-parse/sync');
 initializeApp();
 const db = getFirestore();
 
+const STANDARD_TYPES = ['OVERVIEW','SAFETY','CDF','DSB','PSB','DVIC'];
 const REQUIRED = {
-  OVERVIEW: [
-    ['delivery associate'],
-    ['overall score'],
-    ['packages delivered']
-  ],
+  OVERVIEW: [['delivery associate'],['overall score'],['packages delivered']],
   SAFETY: [
     ['delivery associate','driver','transporter name','transporter_name','transporter id','transporterid','transporter_id'],
     ['date station local time','date (station local time)','date'],
@@ -51,9 +48,12 @@ exports.deleteUpload = onCall({region:'us-east1'}, async (request) => {
   const week=String(request.data?.week||'').trim();
   const station=String(request.data?.station||'').toUpperCase();
   const type=String(request.data?.type||'').toUpperCase();
-  if(!/^\d{4}-W\d{2}$/.test(week)||!['DJX3','DJX4'].includes(station)||!Object.keys(REQUIRED).includes(type)){
+  const validStandard=STANDARD_TYPES.includes(type)&&['DJX3','DJX4'].includes(station);
+  const validLog=type==='LOG'&&station==='GLOBAL';
+  if(!/^\d{4}-W\d{2}$/.test(week)||(!validStandard&&!validLog)){
     throw new HttpsError('invalid-argument','Documento inválido.');
   }
+
   const id=`${week}_${station}_${type}`;
   const ref=db.collection('uploads').doc(id);
   const snap=await ref.get();
@@ -64,7 +64,13 @@ exports.deleteUpload = onCall({region:'us-east1'}, async (request) => {
       catch(err){if(err.code!==404) console.warn('No se pudo borrar archivo:',err.message||err);}
     }
   }
-  await deleteRecords(week,station,type);
+
+  if(type==='LOG'){
+    await deleteRecords(week,'DJX3','LOG');
+    await deleteRecords(week,'DJX4','LOG');
+  }else{
+    await deleteRecords(week,station,type);
+  }
   await ref.delete();
   await db.collection('generations').doc(week).set({status:'draft',updatedAt:FieldValue.serverTimestamp()},{merge:true});
   return {ok:true};
@@ -79,11 +85,17 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
   const uploads = snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.storagePath);
   if (!uploads.length) throw new HttpsError('failed-precondition',`No hay documentos cargados para ${week}.`);
 
-  await db.collection('generations').doc(week).set({week,status:'processing',startedAt:FieldValue.serverTimestamp(),documentCount:uploads.length,error:''},{merge:true});
+  await db.collection('generations').doc(week).set({
+    week,status:'processing',startedAt:FieldValue.serverTimestamp(),
+    documentCount:uploads.length,error:''
+  },{merge:true});
 
   const prepared=[];
   const errors=[];
-  for (const u of uploads) {
+  const regularUploads=uploads.filter(u=>u.type!=='LOG');
+  const logUploads=uploads.filter(u=>u.type==='LOG');
+
+  for (const u of regularUploads) {
     try {
       const [buffer]=await getStorage().bucket().file(u.storagePath).download();
       const rows=parseFile(buffer,u.fileName || u.storagePath.split('/').pop());
@@ -97,6 +109,18 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
     }
   }
 
+  const driverMap=buildDriverStationMap(prepared);
+  for(const u of logUploads){
+    try{
+      const [buffer]=await getStorage().bucket().file(u.storagePath).download();
+      const records=parseLogWorkbook(buffer,{week,fileName:u.fileName},driverMap);
+      prepared.push({upload:u,records,isGlobalLog:true});
+    }catch(err){
+      errors.push(`LOG: ${err.message||String(err)}`);
+      await db.collection('uploads').doc(u.id).set({status:'error',error:String(err.message||err),updatedAt:FieldValue.serverTimestamp()},{merge:true});
+    }
+  }
+
   if (errors.length) {
     await db.collection('generations').doc(week).set({status:'error',error:errors.join(' | '),updatedAt:FieldValue.serverTimestamp()},{merge:true});
     throw new HttpsError('failed-precondition',`No se generó ${week}. ${errors.join(' | ')}`);
@@ -104,13 +128,42 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
 
   let totalRecords=0;
   for (const p of prepared) {
-    await replaceRecords(week,p.upload.station,p.upload.type,p.records);
-    totalRecords += p.records.length;
-    await db.collection('uploads').doc(p.upload.id).set({status:'generated',rows:p.records.length,validation:'OK',error:'',generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()},{merge:true});
+    if(p.isGlobalLog){
+      await deleteRecords(week,'DJX3','LOG');
+      await deleteRecords(week,'DJX4','LOG');
+      const byStation={
+        DJX3:p.records.filter(r=>r.station==='DJX3'),
+        DJX4:p.records.filter(r=>r.station==='DJX4')
+      };
+      await writeRecords(byStation.DJX3);
+      await writeRecords(byStation.DJX4);
+      totalRecords += p.records.length;
+      await db.collection('uploads').doc(p.upload.id).set({
+        status:'generated',rows:p.records.length,validation:'OK',error:'',
+        matchedDJX3:byStation.DJX3.length,matchedDJX4:byStation.DJX4.length,
+        generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
+      },{merge:true});
+    }else{
+      await replaceRecords(week,p.upload.station,p.upload.type,p.records);
+      totalRecords += p.records.length;
+      await db.collection('uploads').doc(p.upload.id).set({
+        status:'generated',rows:p.records.length,validation:'OK',error:'',
+        generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
+      },{merge:true});
+    }
   }
 
-  await db.collection('generations').doc(week).set({week,status:'generated',documentCount:prepared.length,records:totalRecords,error:'',generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()},{merge:true});
-  return {week,documents:prepared.length,records:totalRecords};
+  const driverCounts={};
+  for(const station of ['DJX3','DJX4']){
+    const q=await db.collection('records').where('week','==',week).where('station','==',station).where('sourceType','==','OVERVIEW').get();
+    driverCounts[station]=q.size;
+  }
+
+  await db.collection('generations').doc(week).set({
+    week,status:'generated',documentCount:prepared.length,records:totalRecords,driverCounts,error:'',
+    generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
+  },{merge:true});
+  return {week,documents:prepared.length,records:totalRecords,driverCounts};
 });
 
 function parseFile(buffer,fileName){
@@ -128,8 +181,21 @@ function get(row,idx,names){for(const n of names){const i=idx[clean(n)];if(i!==u
 function validate(headers,type){const normalized=headers.map(clean),missing=[];for(const alternatives of REQUIRED[type]||[]){if(!alternatives.some(x=>normalized.includes(clean(x))))missing.push(alternatives[0]);}return missing.length?{ok:false,message:`Archivo incorrecto para ${type}. Faltan columnas: ${missing.join(', ')}`}:{ok:true};}
 function truthy(v){const s=clean(v);return v===1||s==='1'||s==='y'||s==='yes'||s==='true'||s==='x';}
 function num(v){const n=Number(String(v??'').replace(/,/g,''));return Number.isFinite(n)?n:0;}
-function driverKey(name,transporterId){if(String(transporterId||'').trim())return String(transporterId).trim();return clean(name).replace(/[^a-z0-9]+/g,'_');}
-function base(meta,key,name,transporterId,kind,date,label,extra={}){return{week:meta.week,station:meta.station,sourceType:meta.type,fileName:meta.fileName,driverKey:key,driverName:String(name||''),transporterId:String(transporterId||''),kind,date:String(date||''),label:String(label||''),extra};}
+function normalizeName(v){return clean(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();}
+function driverKey(name,transporterId){if(String(transporterId||'').trim())return String(transporterId).trim();return normalizeName(name).replace(/\s+/g,'_');}
+function base(meta,key,name,transporterId,kind,date,label,extra={}){return{week:meta.week,station:meta.station,sourceType:meta.type,fileName:meta.fileName,driverKey:key,driverName:String(name||''),transporterId:String(transporterId||''),kind,date:dateString(date),label:String(label||''),extra};}
+function dateString(v){
+  if(v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0,10);
+  if(typeof v==='number'){
+    const parsed=XLSX.SSF.parse_date_code(v);
+    if(parsed) return `${parsed.y}-${String(parsed.m).padStart(2,'0')}-${String(parsed.d).padStart(2,'0')}`;
+  }
+  const s=String(v??'').trim();
+  if(!s)return '';
+  const d=new Date(s);
+  if(!Number.isNaN(d.getTime()))return d.toISOString().slice(0,10);
+  return s;
+}
 
 function normalize(rows,meta){
   const headers=rows[0],cleaned=headers.map(clean),idx=idxMap(headers),out=[];
@@ -142,7 +208,11 @@ function normalize(rows,meta){
       if(!name || packages===0) continue;
       const transporterId=String(get(row,idx,['transporter id','transporterid','transporter_id'])||'').trim();
       const key=driverKey(name,transporterId); if(!key)continue;
-      out.push(base(meta,key,name,transporterId,'OVERVIEW','','',{standing:get(row,idx,['overall standing']),overallScore:num(get(row,idx,['overall score'])),packages}));
+      out.push(base(meta,key,name,transporterId,'OVERVIEW','','',{
+        standing:get(row,idx,['overall standing']),
+        overallScore:num(get(row,idx,['overall score'])),
+        packages
+      }));
       continue;
     }
 
@@ -184,11 +254,118 @@ function normalize(rows,meta){
   return out;
 }
 
+function buildDriverStationMap(prepared){
+  const map=new Map();
+  for(const p of prepared){
+    if(p.upload.type!=='OVERVIEW')continue;
+    for(const r of p.records){
+      const n=normalizeName(r.driverName);
+      if(n)map.set(n,{station:r.station,key:r.driverKey,transporterId:r.transporterId,name:r.driverName});
+    }
+  }
+  return map;
+}
+
+function parseLogWorkbook(buffer,meta,driverMap){
+  const wb=XLSX.read(buffer,{type:'buffer',cellDates:true});
+  const requiredSheets=['INFRA_LOG','RESCUES_LOG'];
+  for(const sh of requiredSheets) if(!wb.Sheets[sh]) throw new Error(`LOG.xlsx no contiene la hoja ${sh}.`);
+  const out=[];
+
+  const infra=XLSX.utils.sheet_to_json(wb.Sheets['INFRA_LOG'],{header:1,defval:'',raw:true});
+  if(infra.length){
+    const idx=idxMap(infra[0]);
+    for(const row of infra.slice(1)){
+      const name=String(get(row,idx,['driver'])||'').trim();
+      const date=get(row,idx,['date']);
+      if(!name||!dateBelongsToWeek(date,meta.week))continue;
+      const match=driverMap.get(normalizeName(name));
+      if(!match)continue;
+      const category=String(get(row,idx,['category'])||'').trim();
+      const affects=String(get(row,idx,['affects'])||'').trim();
+      out.push(base(
+        {week:meta.week,station:match.station,type:'LOG',fileName:meta.fileName},
+        match.key,match.name,match.transporterId,'LOG_INFRA',date,category,
+        {
+          category,
+          severity:num(get(row,idx,['severity'])),
+          affects,
+          notes:String(get(row,idx,['notes'])||''),
+          dispatcher:String(get(row,idx,['dispatcher'])||'')
+        }
+      ));
+    }
+  }
+
+  const rescues=XLSX.utils.sheet_to_json(wb.Sheets['RESCUES_LOG'],{header:1,defval:'',raw:true});
+  if(rescues.length){
+    const idx=idxMap(rescues[0]);
+    for(const row of rescues.slice(1)){
+      const name=String(get(row,idx,['driver'])||'').trim();
+      const date=get(row,idx,['date']);
+      if(!name||!dateBelongsToWeek(date,meta.week))continue;
+      const match=driverMap.get(normalizeName(name));
+      if(!match)continue;
+      const affects=String(get(row,idx,['affects'])||'').trim();
+      out.push(base(
+        {week:meta.week,station:match.station,type:'LOG',fileName:meta.fileName},
+        match.key,match.name,match.transporterId,'RESCUE',date,'Rescue',
+        {
+          stops:num(get(row,idx,['stop','stops'])),
+          packages:num(get(row,idx,['packages'])),
+          affects,
+          notes:String(get(row,idx,['notes'])||''),
+          dispatcher:String(get(row,idx,['dispatcher'])||'')
+        }
+      ));
+    }
+  }
+  return out;
+}
+
+function dateBelongsToWeek(value,week){
+  const d=toDate(value);
+  if(!d)return false;
+  const {start,end}=amazonWeekBounds(week);
+  return d>=start&&d<=end;
+}
+function toDate(value){
+  if(value instanceof Date&&!Number.isNaN(value.getTime()))return value;
+  if(typeof value==='number'){
+    const p=XLSX.SSF.parse_date_code(value);
+    if(p)return new Date(p.y,p.m-1,p.d,12);
+  }
+  const d=new Date(String(value||''));
+  return Number.isNaN(d.getTime())?null:d;
+}
+function amazonWeekBounds(key){
+  const m=String(key).match(/^(\d{4})-W(\d{2})$/);
+  if(!m)return{start:new Date(0),end:new Date(0)};
+  const year=Number(m[1]),week=Number(m[2]);
+  const jan4=new Date(year,0,4,12),day=jan4.getDay()||7;
+  const monday=new Date(jan4);
+  monday.setDate(jan4.getDate()-(day-1)+7*(week-1));
+  const start=new Date(monday); start.setDate(monday.getDate()-1); start.setHours(0,0,0,0);
+  const end=new Date(start); end.setDate(start.getDate()+6); end.setHours(23,59,59,999);
+  return{start,end};
+}
+
 async function deleteRecords(week,station,type){
   const existing=await db.collection('records').where('week','==',week).where('station','==',station).where('sourceType','==',type).get();
-  for(let i=0;i<existing.docs.length;i+=400){const batch=db.batch();existing.docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));await batch.commit();}
+  for(let i=0;i<existing.docs.length;i+=400){
+    const batch=db.batch();
+    existing.docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+async function writeRecords(records){
+  for(let i=0;i<records.length;i+=400){
+    const batch=db.batch();
+    records.slice(i,i+400).forEach(r=>batch.set(db.collection('records').doc(),{...r,createdAt:FieldValue.serverTimestamp()}));
+    await batch.commit();
+  }
 }
 async function replaceRecords(week,station,type,records){
   await deleteRecords(week,station,type);
-  for(let i=0;i<records.length;i+=400){const batch=db.batch();records.slice(i,i+400).forEach(r=>batch.set(db.collection('records').doc(),{...r,createdAt:FieldValue.serverTimestamp()}));await batch.commit();}
+  await writeRecords(records);
 }
