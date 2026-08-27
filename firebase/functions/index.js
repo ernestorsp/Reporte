@@ -11,7 +11,7 @@ const db = getFirestore();
 
 const REQUIRED = {
   OVERVIEW: [
-    ['delivery associate','driver','transporter name','transporter_name','transporter id','transporterid','transporter_id'],
+    ['delivery associate'],
     ['overall score'],
     ['packages delivered']
   ],
@@ -135,13 +135,22 @@ function normalize(rows,meta){
   const headers=rows[0],cleaned=headers.map(clean),idx=idxMap(headers),out=[];
   for(const row of rows.slice(1)){
     if(!row||row.every(v=>String(v??'').trim()===''))continue;
+
+    if(meta.type==='OVERVIEW'){
+      const name=String(get(row,idx,['delivery associate'])||'').trim();
+      const packages=num(get(row,idx,['packages delivered']));
+      if(!name || packages===0) continue;
+      const transporterId=String(get(row,idx,['transporter id','transporterid','transporter_id'])||'').trim();
+      const key=driverKey(name,transporterId); if(!key)continue;
+      out.push(base(meta,key,name,transporterId,'OVERVIEW','','',{standing:get(row,idx,['overall standing']),overallScore:num(get(row,idx,['overall score'])),packages}));
+      continue;
+    }
+
     const name=get(row,idx,['delivery associate','driver','transporter name','transporter_name','name']);
     const transporterId=get(row,idx,['transporter id','transporterid','transporter_id']);
     const key=driverKey(name,transporterId); if(!key)continue;
 
-    if(meta.type==='OVERVIEW'){
-      out.push(base(meta,key,name,transporterId,'OVERVIEW','','',{standing:get(row,idx,['overall standing']),overallScore:num(get(row,idx,['overall score'])),packages:num(get(row,idx,['packages delivered']))}));
-    } else if(meta.type==='SAFETY'){
+    if(meta.type==='SAFETY'){
       const date=get(row,idx,['date station local time','date (station local time)','date']);
       const metric=get(row,idx,['metric type']);
       if(metric)out.push(base(meta,key,name,transporterId,'INFRACTION',date,metric));
