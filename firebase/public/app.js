@@ -1,6 +1,6 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js';
-import { getFirestore, collection, query, where, onSnapshot, getDocs, doc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
+import { getFirestore, collection, query, where, onSnapshot, getDocs, doc, setDoc, serverTimestamp, deleteDoc, writeBatch } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
 import { getStorage, ref, uploadBytes } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-storage.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js';
 
@@ -58,9 +58,10 @@ function showPage(page){
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
   document.getElementById('page-'+page).classList.add('active');
   document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.page===page));
-  document.getElementById('title').textContent=page==='home'?'Home':page==='uploads'?'Archivos':page;
-  document.getElementById('subtitle').textContent=page==='uploads'?'Carga por semana de Amazon':page==='home'?'Histórico y reportes de drivers':'Drivers y reportes';
+  document.getElementById('title').textContent=page==='home'?'Home':page==='uploads'?'Archivos':page==='reports'?'Reportes':page;
+  document.getElementById('subtitle').textContent=page==='uploads'?'Carga por semana de Amazon':page==='reports'?'Histórico de reportes semanales':page==='home'?'Histórico y reportes de drivers':'Drivers y reportes';
   if(stations.includes(page)) loadStationPage(page);
+  if(page==='reports') loadReportsPage();
 }
 
 function fillWeekOptions(){
@@ -169,6 +170,7 @@ async function generateSelectedWeek(){
     const result=await generateWeek({week});
     toast(`✓ ${week} generado: ${result.data?.records||0} registros procesados.`);
     if(stations.includes(currentPage)) await loadStationPage(currentPage);
+    if(currentPage==='reports') await loadReportsPage();
   }
   catch(err){toast(err.message||String(err));}
   finally{btn.disabled=false;btn.textContent='Generar reporte';}
@@ -185,9 +187,9 @@ async function loadStationPage(station){
     const snap=await getDocs(q);
     const records=snap.docs.map(d=>({id:d.id,...d.data()}));
     const drivers=aggregateDrivers(records);
-    document.querySelectorAll(`[data-station-count="${station}"]`).forEach(x=>x.textContent=`${drivers.length} drivers · ${records.length} registros`);
+    document.querySelectorAll(`[data-station-count="${station}"]`).forEach(x=>x.textContent=`${drivers.length} drivers`);
     if(!drivers.length){
-      root.innerHTML='<div class="empty">No hay datos generados para esta estación en la semana seleccionada.</div>';
+      root.innerHTML='<div class="empty">No hay drivers con nombre para esta estación en la semana seleccionada.</div>';
       return;
     }
     root.innerHTML=renderDriverTable(drivers);
@@ -196,35 +198,100 @@ async function loadStationPage(station){
   }
 }
 
+function isRealDriverName(name, transporterId){
+  const n=String(name||'').trim();
+  if(!n) return false;
+  if(transporterId && n.toUpperCase()===String(transporterId).trim().toUpperCase()) return false;
+  if(/^[A-Z0-9]{10,}$/i.test(n.replace(/\s+/g,''))) return false;
+  if(!/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(n)) return false;
+  return /\s/.test(n);
+}
+
 function aggregateDrivers(records){
   const map=new Map();
-  for(const r of records){
-    const key=String(r.driverKey||r.transporterId||r.driverName||'').trim();
+  for(const r of records.filter(x=>x.kind==='OVERVIEW')){
+    const name=String(r.driverName||'').trim();
+    const transporterId=String(r.transporterId||'').trim();
+    if(!isRealDriverName(name,transporterId)) continue;
+    const key=String(r.driverKey||transporterId||name).trim();
     if(!key) continue;
-    if(!map.has(key)) map.set(key,{key,name:r.driverName||'',transporterId:r.transporterId||'',packages:0,overallScore:null,standing:'',complaints:0,infractions:0,pickups:0,dsb:0,dvic:0,records:[]});
+    if(!map.has(key)) map.set(key,{key,name,transporterId,packages:0,overallScore:null,standing:'',complaints:0,infractions:0,pickups:0,dsb:0,dvic:0,records:[]});
     const d=map.get(key);
-    if(r.driverName&&!d.name)d.name=r.driverName;
-    if(r.transporterId&&!d.transporterId)d.transporterId=r.transporterId;
     d.records.push(r);
-    if(r.kind==='OVERVIEW'){
-      d.packages=Math.max(d.packages,Number(r.extra?.packages||0));
-      if(r.extra?.overallScore!==undefined)d.overallScore=Number(r.extra.overallScore||0);
-      if(r.extra?.standing)d.standing=String(r.extra.standing);
-    } else if(r.kind==='COMPLAINT') d.complaints++;
+    d.packages=Math.max(d.packages,Number(r.extra?.packages||0));
+    if(r.extra?.overallScore!==undefined)d.overallScore=Number(r.extra.overallScore||0);
+    if(r.extra?.standing)d.standing=String(r.extra.standing);
+  }
+  for(const r of records.filter(x=>x.kind!=='OVERVIEW')){
+    const key=String(r.driverKey||r.transporterId||'').trim();
+    const d=map.get(key);
+    if(!d) continue;
+    d.records.push(r);
+    if(r.kind==='COMPLAINT') d.complaints++;
     else if(r.kind==='INFRACTION') d.infractions++;
     else if(r.kind==='FAILED_PICKUP') d.pickups+=Number(r.extra?.count||1);
     else if(r.kind==='DSB') d.dsb++;
     else if(r.kind==='DVIC') d.dvic++;
   }
-  return [...map.values()].sort((a,b)=>(a.name||a.key).localeCompare(b.name||b.key));
+  return [...map.values()].sort((a,b)=>a.name.localeCompare(b.name));
 }
 
 function renderDriverTable(drivers){
   const rows=drivers.map(d=>{
     const details=d.records.filter(r=>r.kind!=='OVERVIEW').map(r=>`<span class="detail-pill"><b>${escapeHtml(kindLabel(r.kind))}</b>${r.label?`: ${escapeHtml(r.label)}`:''}${r.date?` · ${escapeHtml(r.date)}`:''}</span>`).join('')||'<span class="muted">Sin incidencias en los documentos generados.</span>';
-    return `<div class="driver-row"><div class="driver-main"><div class="driver-name"><b>${escapeHtml(d.name||d.key)}</b><span>${escapeHtml(d.transporterId||'')}</span></div><div class="metric"><b>${d.packages}</b><span>Paquetes</span></div><div class="metric"><b>${d.complaints}</b><span>Complaints</span></div><div class="metric"><b>${d.infractions}</b><span>Safety</span></div><div class="metric"><b>${d.pickups}</b><span>Pickups</span></div><div class="metric"><b>${d.dsb}</b><span>DSB</span></div><div class="metric"><b>${d.dvic}</b><span>DVIC</span></div><details class="driver-details"><summary>Ver detalle</summary><div class="detail-list">${details}</div></details></div></div>`;
+    return `<div class="driver-row"><div class="driver-main"><div class="driver-name"><b>${escapeHtml(d.name)}</b><span>${escapeHtml(d.transporterId||'')}</span></div><div class="metric"><b>${d.packages}</b><span>Paquetes</span></div><div class="metric"><b>${d.complaints}</b><span>Complaints</span></div><div class="metric"><b>${d.infractions}</b><span>Safety</span></div><div class="metric"><b>${d.pickups}</b><span>Pickups</span></div><div class="metric"><b>${d.dsb}</b><span>DSB</span></div><div class="metric"><b>${d.dvic}</b><span>DVIC</span></div><details class="driver-details"><summary>Ver detalle</summary><div class="detail-list">${details}</div></details></div></div>`;
   }).join('');
   return `<div class="drivers-table"><div class="drivers-header"><span>Driver</span><span>Paquetes</span><span>Complaints</span><span>Safety</span><span>Pickups</span><span>DSB</span><span>DVIC</span><span>Reporte</span></div>${rows}</div>`;
+}
+
+async function loadReportsPage(){
+  const root=document.getElementById('reportsList');
+  if(!root) return;
+  root.innerHTML='<div class="empty">Cargando reportes...</div>';
+  try{
+    await authReady;
+    const snap=await getDocs(collection(db,'generations'));
+    const reports=snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.status==='generated').sort((a,b)=>String(b.week||b.id).localeCompare(String(a.week||a.id)));
+    if(!reports.length){root.innerHTML='<div class="empty">Todavía no hay reportes generados.</div>';return;}
+    root.innerHTML=reports.map(r=>reportRow(r)).join('');
+    root.querySelectorAll('[data-open-report]').forEach(btn=>btn.addEventListener('click',()=>{
+      const week=btn.dataset.week;
+      if([...weekEl.options].some(o=>o.value===week)) weekEl.value=week;
+      updateWeekText(); watchUploads(); showPage('DJX3');
+    }));
+    root.querySelectorAll('[data-delete-report]').forEach(btn=>btn.addEventListener('click',async()=>{
+      const week=btn.dataset.week;
+      if(!confirm(`¿Borrar completamente el reporte ${week}? Los archivos quedan cargados para que puedas generarlo otra vez.`)) return;
+      btn.disabled=true;
+      try{await deleteGeneratedReport(week);toast(`✓ Reporte ${week} eliminado.`);await loadReportsPage();}
+      catch(err){toast(err.message||String(err));btn.disabled=false;}
+    }));
+  }catch(err){root.innerHTML=`<div class="empty bad">No pude cargar los reportes: ${escapeHtml(err.message||String(err))}</div>`;}
+}
+
+function reportRow(r){
+  const week=String(r.week||r.id||'');
+  const short=week.replace(/^\d{4}-/,'');
+  const b=amazonWeekBounds(week);
+  return `<div class="row"><div class="left"><span class="dot loaded">✓</span><div><b>${escapeHtml(short)}</b><div class="small">${escapeHtml(week)} · ${shortDate(b.start)} - ${shortDate(b.end)} · ${Number(r.records||0)} registros</div></div></div><div class="row-actions"><button class="btn secondary" data-open-report="1" data-week="${week}">Ver</button><button class="delete-btn" data-delete-report="1" data-week="${week}" title="Borrar reporte" aria-label="Borrar reporte">🗑</button></div></div>`;
+}
+
+async function deleteGeneratedReport(week){
+  await authReady;
+  const recSnap=await getDocs(query(collection(db,'records'),where('week','==',week)));
+  for(let i=0;i<recSnap.docs.length;i+=400){
+    const batch=writeBatch(db);
+    recSnap.docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));
+    await batch.commit();
+  }
+  const upSnap=await getDocs(query(collection(db,'uploads'),where('week','==',week)));
+  for(let i=0;i<upSnap.docs.length;i+=400){
+    const batch=writeBatch(db);
+    upSnap.docs.slice(i,i+400).forEach(d=>batch.set(d.ref,{status:'uploaded',rows:null,validation:'',error:'',updatedAt:serverTimestamp()},{merge:true}));
+    await batch.commit();
+  }
+  await deleteDoc(doc(db,'generations',week));
+  if(weekEl.value===week && stations.includes(currentPage)) await loadStationPage(currentPage);
 }
 
 function kindLabel(kind){return ({COMPLAINT:'Complaint',INFRACTION:'Safety',FAILED_PICKUP:'Pickup',DSB:'DSB',DVIC:'DVIC'})[kind]||kind;}
@@ -250,6 +317,6 @@ function shortDate(d){return d.toLocaleDateString('en-US',{month:'short',day:'nu
 function longDate(d){return d.toLocaleDateString('es-US',{month:'short',day:'numeric',year:'numeric'});}
 function label(x){return({OVERVIEW:'Overview / Packages',SAFETY:'Safety',CDF:'CDF Complaints',DSB:'DSB',PSB:'PSB Pickups',DVIC:'DVIC'})[x]||x;}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';clearTimeout(window.__toast);window.__toast=setTimeout(()=>t.style.display='none',5500);}
-function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[c]));}
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 
 renderUploadGrid();
