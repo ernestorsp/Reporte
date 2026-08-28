@@ -135,15 +135,7 @@ async function watchUploads(){
 
 function renderUploadGrid(){
   const root=document.getElementById('uploadGrid');
-  const logStatus=uploadMap['GLOBAL_LOG'];
-  root.innerHTML=`
-    <div class="station global-upload">
-      <h3>LOG semanal</h3>
-      <div class="muted">INFRA_LOG + RESCUES_LOG · NCNS, CO, Late Morning y rescates.</div>
-      ${uploadRow('GLOBAL','LOG',logStatus)}
-    </div>
-    ${stations.map(st=>`<div class="station"><h3>${st}</h3>${docs.map(type=>uploadRow(st,type,uploadMap[`${st}_${type}`])).join('')}</div>`).join('')}
-  `;
+  root.innerHTML=stations.map(st=>`<div class="station"><h3>${st}</h3>${docs.map(type=>uploadRow(st,type,uploadMap[`${st}_${type}`])).join('')}</div>`).join('');
   root.querySelectorAll('[data-upload]').forEach(el=>el.addEventListener('click',()=>{
     selectedSlot={station:el.dataset.station,type:el.dataset.type};
     bulkMode=false;
@@ -153,18 +145,17 @@ function renderUploadGrid(){
     e.stopPropagation();
     const station=btn.dataset.station, type=btn.dataset.type;
     if(!uploadMap[`${station}_${type}`]) return;
-    if(!confirm(`¿Borrar ${label(type)} para ${weekEl.value} y dejarlo en blanco?`)) return;
+    if(!confirm(`¿Borrar ${label(type)} de ${station} para ${weekEl.value} y dejarlo en blanco?`)) return;
     btn.disabled=true;
     try{
       await authReady;
       await deleteUpload({week:weekEl.value,station,type});
-      toast(`✓ ${label(type)} eliminado.`);
+      toast(`✓ ${label(type)} de ${station} eliminado.`);
       if(stations.includes(currentPage)) loadStationPage(currentPage);
     }catch(err){toast(err.message||String(err));btn.disabled=false;}
   }));
-  const standardReady=stations.flatMap(st=>docs.map(type=>uploadMap[`${st}_${type}`])).filter(x=>x&&['uploaded','generated'].includes(x.status)).length;
-  const logReady=logStatus&&['uploaded','generated'].includes(logStatus.status)?1:0;
-  document.getElementById('weekProgress').textContent=`${standardReady + logReady} de 13 documentos cargados para ${weekEl.value}. Los datos todavía no se procesan hasta Generar reporte.`;
+  const ready=stations.flatMap(st=>docs.map(type=>uploadMap[`${st}_${type}`])).filter(x=>x&&['uploaded','generated'].includes(x.status)).length;
+  document.getElementById('weekProgress').textContent=`${ready} de 12 documentos cargados para ${weekEl.value}. LOG se lee automáticamente al generar el reporte.`;
 }
 
 function uploadRow(st,type,status){
@@ -172,8 +163,7 @@ function uploadRow(st,type,status){
   const cls=s==='generated'?'loaded':s==='uploaded'?'processing':s==='error'?'error':'pending';
   const icon=s==='generated'||s==='uploaded'?'✓':s==='error'?'!':'•';
   const state=s==='generated'?'<span class="ok">✓ Generado</span>':s==='uploaded'?'<span class="ok">✓ Cargado</span>':s==='error'?'<span class="bad">Error</span>':'Pendiente';
-  let meta=status?.fileName||(s==='error'?status?.error:'Haz clic para cargar');
-  if(type==='LOG'&&status?.status==='generated') meta+=` · DJX3: ${status.matchedDJX3||0} · DJX4: ${status.matchedDJX4||0}`;
+  const meta=status?.fileName||(s==='error'?status?.error:'Haz clic para cargar');
   const del=status?`<button class="delete-btn" data-delete="1" data-station="${st}" data-type="${type}" title="Borrar archivo" aria-label="Borrar archivo">🗑</button>`:'';
   return `<div class="row clickable" data-upload="1" data-station="${st}" data-type="${type}"><div class="left"><span class="dot ${cls}">${icon}</span><div><b>${label(type)}</b><div class="small">${escapeHtml(meta||'')}</div></div></div><div class="row-actions"><div class="small">${state}</div>${del}</div></div>`;
 }
@@ -210,14 +200,15 @@ async function uploadOne(file,week,slot){
 async function generateSelectedWeek(){
   try{await authReady;}catch(err){toast('No pude preparar el acceso: '+(err.message||String(err)));return;}
   const week=weekEl.value;
-  const loaded=Object.values(uploadMap).filter(x=>x&&['uploaded','generated'].includes(x.status)).length;
+  const loaded=stations.flatMap(st=>docs.map(type=>uploadMap[`${st}_${type}`])).filter(x=>x&&['uploaded','generated'].includes(x.status)).length;
   if(!loaded){toast('Primero carga los documentos de la semana');return;}
-  if(loaded<13&&!confirm(`Hay ${loaded} de 13 documentos cargados para ${week}. ¿Quieres generar de todas formas?`))return;
+  if(loaded<12&&!confirm(`Hay ${loaded} de 12 documentos cargados para ${week}. ¿Quieres generar de todas formas? LOG se leerá automáticamente.`))return;
   const btn=document.getElementById('generateReport');btn.disabled=true;btn.textContent='Generando...';
   try{
     const result=await generateWeek({week});
     const dc=result.data?.driverCounts||{};
-    toast(`✓ ${week} generado · DJX3: ${dc.DJX3||0} drivers · DJX4: ${dc.DJX4||0} drivers.`);
+    const logCount=Number(result.data?.logRecords||0);
+    toast(`✓ ${week} generado · DJX3: ${dc.DJX3||0} drivers · DJX4: ${dc.DJX4||0} drivers · LOG: ${logCount} eventos.`);
     if(stations.includes(currentPage)) await loadStationPage(currentPage);
     if(currentPage==='reports') await loadReportsPage();
   }
@@ -468,7 +459,6 @@ function kindLabel(kind){return ({OVERVIEW:'Packages',COMPLAINT:'Complaint',INFR
 
 function detectSlotFromName(name){
   const s=String(name||'').toLowerCase();
-  if(/(^|[_\-. ])log([_\-. ]|$)/.test(s)||s==='log.xlsx'||s==='log.xls')return{station:'GLOBAL',type:'LOG'};
   const station=s.includes('djx3')?'DJX3':s.includes('djx4')?'DJX4':null;
   if(!station)return null;
   let type=null;
@@ -486,10 +476,10 @@ function isoWeekKey(d){const x=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.
 function amazonWeekBounds(key){const m=String(key).match(/^(\d{4})-W(\d{2})$/);if(!m)return{start:new Date(),end:new Date()};const year=Number(m[1]),week=Number(m[2]),jan4=new Date(year,0,4,12),day=jan4.getDay()||7,monday=new Date(jan4);monday.setDate(jan4.getDate()-(day-1)+7*(week-1));const start=new Date(monday);start.setDate(monday.getDate()-1);start.setHours(0,0,0,0);const end=new Date(start);end.setDate(start.getDate()+6);end.setHours(23,59,59,999);return{start,end};}
 function shortDate(d){return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});}
 function longDate(d){return d.toLocaleDateString('es-US',{month:'short',day:'numeric',year:'numeric'});}
-function label(x){return({OVERVIEW:'Overview / Packages',SAFETY:'Safety',CDF:'CDF Complaints',DSB:'DSB',PSB:'PSB Pickups',DVIC:'DVIC',LOG:'LOG (Infra + Rescues)'})[x]||x;}
+function label(x){return({OVERVIEW:'Overview / Packages',SAFETY:'Safety',CDF:'CDF Complaints',DSB:'DSB',PSB:'PSB Pickups',DVIC:'DVIC'})[x]||x;}
 function round2(v){return Math.round((Number(v)||0)*100)/100;}
 function formatPoints(v){const n=round2(v);return `${n>0?'+':''}${n.toFixed(2)}`;}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';clearTimeout(window.__toast);window.__toast=setTimeout(()=>t.style.display='none',5500);}
-function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[c]));}
 
 renderUploadGrid();
