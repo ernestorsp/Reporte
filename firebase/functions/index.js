@@ -3,11 +3,13 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getStorage } = require('firebase-admin/storage');
+const { GoogleAuth } = require('google-auth-library');
 const XLSX = require('xlsx');
 const { parse } = require('csv-parse/sync');
 
 initializeApp();
 const db = getFirestore();
+const googleAuth = new GoogleAuth({scopes:['https://www.googleapis.com/auth/spreadsheets.readonly']});
 
 const STANDARD_TYPES = ['OVERVIEW','SAFETY','CDF','DSB','PSB','DVIC'];
 const LOG_SHEET_ID = '1Hh-SaxsOQaBRadK7M1k-FWehlbi_s5CvZDAsluSF4ZU';
@@ -152,18 +154,21 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
 });
 
 async function fetchLogSheet(sheetName){
-  const url=`https://docs.google.com/spreadsheets/d/${LOG_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
-  const res=await fetch(url,{redirect:'follow'});
-  if(!res.ok) throw new Error(`No pude abrir ${sheetName} (${res.status}).`);
-  const text=await res.text();
-  if(!text||/<html/i.test(text)||/accounts\.google\.com/i.test(text)){
-    throw new Error(`No tengo acceso a ${sheetName}. Comparte el documento LOG para lectura mediante enlace.`);
+  const client=await googleAuth.getClient();
+  const headers=await client.getRequestHeaders();
+  const range=encodeURIComponent(`${sheetName}!A:Z`);
+  const url=`https://sheets.googleapis.com/v4/spreadsheets/${LOG_SHEET_ID}/values/${range}?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`;
+  const res=await fetch(url,{headers});
+  if(!res.ok){
+    const body=await res.text();
+    throw new Error(`No pude leer ${sheetName} desde Google Sheets (${res.status}). ${body.slice(0,180)}`);
   }
-  const rows=parse(text,{skip_empty_lines:true,relax_column_count:true,bom:true});
+  const data=await res.json();
+  const rows=Array.isArray(data.values)?data.values:[];
   if(!rows.length) throw new Error(`${sheetName} está vacío.`);
-  const headers=rows[0].map(clean);
-  if(!headers.includes('date')||!headers.includes('driver')){
-    throw new Error(`${sheetName} no devolvió las columnas Date y Driver. Revisa el acceso al documento LOG.`);
+  const headersClean=rows[0].map(clean);
+  if(!headersClean.includes('date')||!headersClean.includes('driver')){
+    throw new Error(`${sheetName} no tiene las columnas Date y Driver.`);
   }
   return rows;
 }
