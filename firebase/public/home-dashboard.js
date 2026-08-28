@@ -46,6 +46,29 @@ function scoreRecord(r,s){
   return 0;
 }
 
+function buildRoster(records){
+  const byId=new Map(),byKey=new Map(),byName=new Map();
+  for(const r of records.filter(x=>x.kind==='OVERVIEW')){
+    const person={name:String(r.driverName||'').trim(),station:r.station,transporterId:String(r.transporterId||'').trim(),key:String(r.driverKey||'').trim()};
+    if(person.transporterId)byId.set(`${r.station}|${person.transporterId.toUpperCase()}`,person);
+    if(person.key)byKey.set(`${r.station}|${person.key.toUpperCase()}`,person);
+    const n=norm(person.name);if(n)byName.set(`${r.station}|${n}`,person);
+  }
+  return {byId,byKey,byName};
+}
+
+function resolvePerson(r,roster){
+  const station=String(r.station||'');
+  const tid=String(r.transporterId||'').trim();
+  const key=String(r.driverKey||'').trim();
+  const name=String(r.driverName||'').trim();
+  return (tid&&roster.byId.get(`${station}|${tid.toUpperCase()}`)) ||
+         (key&&roster.byKey.get(`${station}|${key.toUpperCase()}`)) ||
+         (name&&roster.byId.get(`${station}|${name.toUpperCase()}`)) ||
+         (name&&roster.byKey.get(`${station}|${name.toUpperCase()}`)) ||
+         (name&&roster.byName.get(`${station}|${norm(name)}`)) || null;
+}
+
 function aggregateDrivers(records,s){
   const map=new Map(),byName=new Map();
   for(const r of records.filter(x=>x.kind==='OVERVIEW')){
@@ -61,24 +84,28 @@ function aggregateDrivers(records,s){
   return [...map.values()].map(d=>({...d,points:Math.round(d.points*100)/100}));
 }
 
-function groupComplaints(records){
+function groupComplaints(records,roster){
   const m=new Map();
-  for(const r of records.filter(x=>x.kind==='COMPLAINT'||x.sourceType==='CDF'&&x.kind==='COMPLAINT')){
-    const name=String(r.driverName||'').trim();if(!name)continue;
-    const k=`${r.station}|${norm(name)}`;
-    if(!m.has(k))m.set(k,{name,station:r.station,complaints:0});
+  for(const r of records.filter(x=>x.kind==='COMPLAINT')){
+    const person=resolvePerson(r,roster);
+    const name=String(person?.name||r.driverName||'').trim();if(!name)continue;
+    const station=person?.station||r.station;
+    const stable=String(person?.transporterId||person?.key||norm(name));
+    const k=`${station}|${stable}`;
+    if(!m.has(k))m.set(k,{name,station,complaints:0});
     m.get(k).complaints++;
   }
   return [...m.values()].sort((a,b)=>b.complaints-a.complaints||a.name.localeCompare(b.name)).slice(0,10);
 }
 
-function groupRescues(records,station){
+function groupRescues(records,station,roster){
   const m=new Map();
   for(const r of records.filter(x=>x.kind==='RESCUE'&&x.station===station&&lower(x.extra?.affects)==='yes')){
-    const name=String(r.driverName||'').trim();if(!name)continue;
-    const k=norm(name);
-    if(!m.has(k))m.set(k,{name,station,rescueCount:0,rescueStops:0,rescuePackages:0});
-    const d=m.get(k);d.rescueCount++;d.rescueStops+=num(r.extra?.stops);d.rescuePackages+=num(r.extra?.packages);
+    const person=resolvePerson(r,roster);
+    const name=String(person?.name||r.driverName||'').trim();if(!name)continue;
+    const stable=String(person?.transporterId||person?.key||norm(name));
+    if(!m.has(stable))m.set(stable,{name,station,rescueCount:0,rescueStops:0,rescuePackages:0});
+    const d=m.get(stable);d.rescueCount++;d.rescueStops+=num(r.extra?.stops);d.rescuePackages+=num(r.extra?.packages);
   }
   return [...m.values()].sort((a,b)=>b.rescueCount-a.rescueCount||(b.rescueStops+b.rescuePackages)-(a.rescueStops+a.rescuePackages)).slice(0,5);
 }
@@ -92,8 +119,9 @@ function stationTop(drivers,station){return drivers.filter(d=>d.station===statio
 async function refreshHome(){
   const root=document.getElementById('homeDashboard');if(!root||!authReady)return;
   const w=week();if(!w)return;lastWeek=w;
-  root.innerHTML='<div class="home-loading">Actualizando LOG y cargando dashboard...</div>';
+  root.innerHTML='<div class="home-loading">Cargando dashboard...</div>';
   try{
+    // Fallback para semanas antiguas: refresca rescates desde LOG. Las semanas nuevas ya los importan al generar reporte.
     try{await syncHomeRescues({week:w});}catch(syncErr){console.warn('No pude refrescar RESCUE_LOG:',syncErr);}
     const [snap,scoreSnap]=await Promise.all([
       getDocs(query(collection(db,'records'),where('week','==',w))),
@@ -102,10 +130,11 @@ async function refreshHome(){
     if(w!==week())return;
     const records=snap.docs.map(d=>d.data());
     const scoring={...DEFAULT_SCORING,...(scoreSnap.exists()?scoreSnap.data():{})};
+    const roster=buildRoster(records);
     const drivers=aggregateDrivers(records,scoring);
     const t3=stationTop(drivers,'DJX3'),t4=stationTop(drivers,'DJX4');
-    const complaints=groupComplaints(records);
-    const r3=groupRescues(records,'DJX3'),r4=groupRescues(records,'DJX4');
+    const complaints=groupComplaints(records,roster);
+    const r3=groupRescues(records,'DJX3',roster),r4=groupRescues(records,'DJX4',roster);
     const totalDrivers=drivers.length,totalComplaints=records.filter(r=>r.kind==='COMPLAINT').length,totalRescues=records.filter(r=>r.kind==='RESCUE'&&lower(r.extra?.affects)==='yes').length;
     root.innerHTML=`
       <div class="home-hero">
@@ -119,7 +148,7 @@ async function refreshHome(){
       </div>
       <div class="home-section-title"><div><span class="home-section-kicker danger">02 · ATTENTION</span><h3>Complaints · ambas estaciones</h3></div><span class="home-pill danger">CDF · Top 10</span></div>
       <div class="home-card home-wide"><div class="home-card-head"><div><span>DJX3 + DJX4</span><h4>Drivers con más complaints</h4></div><div class="home-medal">⚠️</div></div>${rankRows(complaints,d=>String(d.complaints),'Complaints','bad')}</div>
-      <div class="home-section-title"><div><span class="home-section-kicker danger">03 · RESCUES</span><h3>Drivers que más rescates reciben</h3></div><span class="home-pill danger">RESCUE_LOG · Affects = Yes</span></div>
+      <div class="home-section-title"><div><span class="home-section-kicker danger">03 · RESCUES</span><h3>Drivers que más rescates reciben</h3></div><span class="home-pill danger">LOG · Affects = Yes</span></div>
       <div class="home-grid-two">
         <div class="home-card"><div class="home-card-head"><div><span>DJX3</span><h4>Top 5 rescates negativos</h4></div><div class="home-medal">↓</div></div>${rankRows(r3,d=>String(d.rescueCount),'Rescates recibidos','bad')}<div class="home-footnote">Desempate por Stops + Packages recibidos.</div></div>
         <div class="home-card"><div class="home-card-head"><div><span>DJX4</span><h4>Top 5 rescates negativos</h4></div><div class="home-medal">↓</div></div>${rankRows(r4,d=>String(d.rescueCount),'Rescates recibidos','bad')}<div class="home-footnote">Desempate por Stops + Packages recibidos.</div></div>
