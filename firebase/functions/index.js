@@ -22,70 +22,84 @@ const REQUIRED = {
   ],
   CDF: [
     ['delivery associate','driver','transporter id','transporterid','transporter_id'],
-    ['delivery date','date'],['feedback details']
+    ['delivery date','date'],
+    ['feedback details']
   ],
-  DSB: [['delivery associate','driver','transporter id','transporterid','transporter_id'],['impacts scorecard']],
+  DSB: [
+    ['delivery associate','driver','transporter id','transporterid','transporter_id'],
+    ['impacts scorecard']
+  ],
   PSB: [
-    ['delivery associate','driver','transporter id','transporterid','transporter_id'],['impacts scorecard'],
+    ['delivery associate','driver','transporter id','transporterid','transporter_id'],
+    ['impacts scorecard'],
     ['early arrivals','late arrivals','geo location','not attempted','contact compliance','out of return label','picked up, not returned']
   ],
   DVIC: [
     ['transporter name','transporter_name','delivery associate','driver','transporter id','transporterid','transporter_id'],
-    ['start date','start_date','date'],['duration']
+    ['start date','start_date','date'],
+    ['duration']
   ]
 };
 
 exports.processWeeklyUpload = onObjectFinalized({region:'us-east1'}, async (event) => {
-  const name=event.data?.name||'';
-  if(name.startsWith('staging/')) return;
+  const name = event.data?.name || '';
+  if (name.startsWith('staging/')) return;
 });
 
-exports.deleteUpload = onCall({region:'us-east1'}, async request=>{
-  if(!request.auth) throw new HttpsError('unauthenticated','Acceso no preparado. Recarga la app.');
+exports.deleteUpload = onCall({region:'us-east1'}, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated','Acceso no preparado. Recarga la app.');
   const week=String(request.data?.week||'').trim();
   const station=String(request.data?.station||'').toUpperCase();
   const type=String(request.data?.type||'').toUpperCase();
-  if(!/^\d{4}-W\d{2}$/.test(week)||!STANDARD_TYPES.includes(type)||!['DJX3','DJX4'].includes(station)) throw new HttpsError('invalid-argument','Documento inválido.');
+  const validStandard=STANDARD_TYPES.includes(type)&&['DJX3','DJX4'].includes(station);
+  if(!/^\d{4}-W\d{2}$/.test(week)||!validStandard) throw new HttpsError('invalid-argument','Documento inválido.');
+
   const id=`${week}_${station}_${type}`;
   const ref=db.collection('uploads').doc(id);
   const snap=await ref.get();
   if(snap.exists){
     const data=snap.data()||{};
-    if(data.storagePath){try{await getStorage().bucket().file(data.storagePath).delete();}catch(err){if(err.code!==404)console.warn(err);}}
+    if(data.storagePath){
+      try{await getStorage().bucket().file(data.storagePath).delete();}
+      catch(err){if(err.code!==404) console.warn('No se pudo borrar archivo:',err.message||err);}
+    }
   }
+
   await deleteRecords(week,station,type);
   await ref.delete();
   await db.collection('generations').doc(week).set({status:'draft',updatedAt:FieldValue.serverTimestamp()},{merge:true});
   return {ok:true};
 });
 
-exports.generateWeek = onCall({region:'us-east1',timeoutSeconds:540,memory:'1GiB'},async request=>{
-  if(!request.auth) throw new HttpsError('unauthenticated','Acceso no preparado. Recarga la app.');
-  const week=String(request.data?.week||'').trim();
-  if(!/^\d{4}-W\d{2}$/.test(week)) throw new HttpsError('invalid-argument','Semana inválida.');
+exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1GiB'}, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated','Acceso no preparado. Recarga la app.');
+  const week = String(request.data?.week || '').trim();
+  if (!/^\d{4}-W\d{2}$/.test(week)) throw new HttpsError('invalid-argument','Semana inválida.');
 
-  const snap=await db.collection('uploads').where('week','==',week).get();
-  const uploads=snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.storagePath&&STANDARD_TYPES.includes(x.type));
-  if(!uploads.length) throw new HttpsError('failed-precondition',`No hay documentos cargados para ${week}.`);
+  const snap = await db.collection('uploads').where('week','==',week).get();
+  const uploads = snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.storagePath&&STANDARD_TYPES.includes(x.type));
+  if (!uploads.length) throw new HttpsError('failed-precondition',`No hay documentos cargados para ${week}.`);
 
   await db.collection('generations').doc(week).set({week,status:'processing',startedAt:FieldValue.serverTimestamp(),documentCount:uploads.length,error:''},{merge:true});
 
-  const prepared=[],errors=[];
-  for(const u of uploads){
-    try{
+  const prepared=[];
+  const errors=[];
+  for (const u of uploads) {
+    try {
       const [buffer]=await getStorage().bucket().file(u.storagePath).download();
-      const rows=parseFile(buffer,u.fileName||u.storagePath.split('/').pop());
-      if(rows.length<2) throw new Error('El archivo no contiene datos suficientes.');
+      const rows=parseFile(buffer,u.fileName || u.storagePath.split('/').pop());
+      if (!rows.length || rows.length<2) throw new Error('El archivo no contiene datos suficientes.');
       const validation=validate(rows[0],u.type);
-      if(!validation.ok) throw new Error(validation.message);
+      if (!validation.ok) throw new Error(validation.message);
       prepared.push({upload:u,records:normalize(rows,{week,station:u.station,type:u.type,fileName:u.fileName})});
-    }catch(err){
+    } catch(err) {
       errors.push(`${u.station} ${u.type}: ${err.message||String(err)}`);
       await db.collection('uploads').doc(u.id).set({status:'error',error:String(err.message||err),updatedAt:FieldValue.serverTimestamp()},{merge:true});
     }
   }
 
-  let logRecords=[],logSheetName='';
+  let logRecords=[];
+  let logSheetName='';
   if(!errors.length){
     try{
       const driverMap=buildDriverStationMap(prepared);
@@ -96,15 +110,15 @@ exports.generateWeek = onCall({region:'us-east1',timeoutSeconds:540,memory:'1GiB
     }catch(err){errors.push(`LOG automático: ${err.message||String(err)}`);}
   }
 
-  if(errors.length){
+  if (errors.length) {
     await db.collection('generations').doc(week).set({status:'error',error:errors.join(' | '),updatedAt:FieldValue.serverTimestamp()},{merge:true});
     throw new HttpsError('failed-precondition',`No se generó ${week}. ${errors.join(' | ')}`);
   }
 
   let totalRecords=0;
-  for(const p of prepared){
+  for (const p of prepared) {
     await replaceRecords(week,p.upload.station,p.upload.type,p.records);
-    totalRecords+=p.records.length;
+    totalRecords += p.records.length;
     await db.collection('uploads').doc(p.upload.id).set({status:'generated',rows:p.records.length,validation:'OK',error:'',generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()},{merge:true});
   }
 
@@ -112,7 +126,7 @@ exports.generateWeek = onCall({region:'us-east1',timeoutSeconds:540,memory:'1GiB
   await deleteRecords(week,'DJX4','LOG');
   await writeRecords(logRecords.filter(r=>r.station==='DJX3'));
   await writeRecords(logRecords.filter(r=>r.station==='DJX4'));
-  totalRecords+=logRecords.length;
+  totalRecords += logRecords.length;
 
   const driverCounts={};
   for(const station of ['DJX3','DJX4']){
@@ -173,8 +187,7 @@ function normalize(rows,meta){
 
     if(meta.type==='SAFETY'){
       const date=get(row,idx,['date station local time','date (station local time)','date']);
-      const metricValues=getAllByHeader(row,headers,'metric type').map(v=>String(v||'').trim()).filter(Boolean);
-      const metric=metricValues.length?metricValues[metricValues.length-1]:String(get(row,idx,['metric type'])||'').trim();
+      const metric=String(get(row,idx,['metric type'])||'').trim();
       const metricSubtype=String(get(row,idx,['metric subtype','metric sub type','metric sub-type'])||'').trim();
       if(metric)out.push(base(meta,key,name,transporterId,'INFRACTION',date,metric,{metricType:metric,metricSubtype}));
     }else if(meta.type==='CDF'){
