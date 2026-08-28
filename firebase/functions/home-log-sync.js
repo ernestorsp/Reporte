@@ -52,41 +52,82 @@ async function fetchRescueSheet(){
   throw new Error('No encontré la hoja RESCUE_LOG ni RESCUES_LOG en LOG.');
 }
 
-exports.syncHomeRescues = onCall({region:'us-east1',timeoutSeconds:120,memory:'512Mi'},async request=>{
-  if(!request.auth)throw new HttpsError('unauthenticated','Acceso no preparado.');
-  const week=String(request.data?.week||'').trim();
-  if(!/^\d{4}-W\d{2}$/.test(week))throw new HttpsError('invalid-argument','Semana inválida.');
-
-  const snap=await db.collection('records').where('week','==',week).get();
-  const driverMap=new Map();
-  const rescueDocs=[];
-  snap.docs.forEach(d=>{
-    const r=d.data();
-    if(r.kind==='OVERVIEW'){
-      const n=normalizeName(r.driverName);
-      if(n)driverMap.set(n,{station:r.station,key:r.driverKey||r.transporterId||n,transporterId:r.transporterId||'',name:r.driverName||''});
-    }
-    if(r.sourceType==='LOG'&&r.kind==='RESCUE')rescueDocs.push(d);
+function buildRoster(snapshot){
+  const byName=new Map(),byId=new Map(),byKey=new Map();
+  snapshot.docs.forEach(d=>{
+    const r=d.data();if(r.kind!=='OVERVIEW')return;
+    const person={station:r.station,key:r.driverKey||r.transporterId||normalizeName(r.driverName),transporterId:r.transporterId||'',name:r.driverName||''};
+    const n=normalizeName(person.name);if(n)byName.set(n,person);
+    if(person.transporterId)byId.set(String(person.transporterId).trim().toUpperCase(),person);
+    if(person.key)byKey.set(String(person.key).trim().toUpperCase(),person);
   });
+  return {byName,byId,byKey};
+}
+function findDriver(raw,roster){
+  const s=String(raw||'').trim();if(!s)return null;
+  return roster.byId.get(s.toUpperCase())||roster.byKey.get(s.toUpperCase())||roster.byName.get(normalizeName(s))||null;
+}
 
-  const {rows,sheet}=await fetchRescueSheet();
-  const idx=idxMap(rows[0]||[]),records=[];
-  for(const row of rows.slice(1)){
-    const name=String(get(row,idx,['driver'])||'').trim();
-    const date=get(row,idx,['date']);
-    if(!name||!belongs(date,week))continue;
-    const match=driverMap.get(normalizeName(name));
-    if(!match)continue;
+async function replaceLogRecords(week,records){
+  const existing=await db.collection('records').where('week','==',week).where('sourceType','==','LOG').get();
+  for(let i=0;i<existing.docs.length;i+=400){const batch=db.batch();existing.docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));await batch.commit();}
+  for(let i=0;i<records.length;i+=400){const batch=db.batch();records.slice(i,i+400).forEach(r=>batch.set(db.collection('records').doc(),{...r,createdAt:FieldValue.serverTimestamp()}));await batch.commit();}
+}
+
+async function importLogWeek(week){
+  const snap=await db.collection('records').where('week','==',week).get();
+  const roster=buildRoster(snap);
+  if(!roster.byName.size&&!roster.byId.size)throw new HttpsError('failed-precondition','Primero genera los Overview de la semana.');
+
+  const [infra,rescueInfo]=await Promise.all([fetchSheet('INFRA_LOG'),fetchRescueSheet()]);
+  if(!infra)throw new Error('No encontré INFRA_LOG en LOG.');
+  const records=[];
+
+  const infraIdx=idxMap(infra[0]||[]);
+  for(const row of infra.slice(1)){
+    const driverRaw=String(get(row,infraIdx,['driver','transporter id','transporterid'])||'').trim();
+    const date=get(row,infraIdx,['date']);
+    if(!driverRaw||!belongs(date,week))continue;
+    const match=findDriver(driverRaw,roster);if(!match)continue;
+    const category=String(get(row,infraIdx,['category'])||'').trim();
     records.push({
-      week,station:match.station,sourceType:'LOG',fileName:`LOG · Google Sheets · ${sheet}`,
+      week,station:match.station,sourceType:'LOG',fileName:'LOG · Google Sheets · INFRA_LOG',
       driverKey:match.key,driverName:match.name,transporterId:match.transporterId,
-      kind:'RESCUE',date:dateString(date),label:'Rescue',
-      extra:{stops:num(get(row,idx,['stop','stops'])),packages:num(get(row,idx,['packages'])),affects:String(get(row,idx,['affects'])||'').trim(),notes:String(get(row,idx,['notes'])||''),dispatcher:String(get(row,idx,['dispatcher'])||'')}
+      kind:'LOG_INFRA',date:dateString(date),label:category,
+      extra:{category,severity:num(get(row,infraIdx,['severity'])),affects:String(get(row,infraIdx,['affects'])||'').trim(),notes:String(get(row,infraIdx,['notes'])||''),dispatcher:String(get(row,infraIdx,['dispatcher'])||'')}
     });
   }
 
-  for(let i=0;i<rescueDocs.length;i+=400){const batch=db.batch();rescueDocs.slice(i,i+400).forEach(d=>batch.delete(d.ref));await batch.commit();}
-  for(let i=0;i<records.length;i+=400){const batch=db.batch();records.slice(i,i+400).forEach(r=>batch.set(db.collection('records').doc(),{...r,createdAt:FieldValue.serverTimestamp()}));await batch.commit();}
+  const rescueIdx=idxMap(rescueInfo.rows[0]||[]);
+  for(const row of rescueInfo.rows.slice(1)){
+    const driverRaw=String(get(row,rescueIdx,['driver','transporter id','transporterid'])||'').trim();
+    const date=get(row,rescueIdx,['date']);
+    if(!driverRaw||!belongs(date,week))continue;
+    const match=findDriver(driverRaw,roster);if(!match)continue;
+    records.push({
+      week,station:match.station,sourceType:'LOG',fileName:`LOG · Google Sheets · ${rescueInfo.sheet}`,
+      driverKey:match.key,driverName:match.name,transporterId:match.transporterId,
+      kind:'RESCUE',date:dateString(date),label:'Rescue',
+      extra:{stops:num(get(row,rescueIdx,['stop','stops'])),packages:num(get(row,rescueIdx,['packages'])),affects:String(get(row,rescueIdx,['affects'])||'').trim(),notes:String(get(row,rescueIdx,['notes'])||''),dispatcher:String(get(row,rescueIdx,['dispatcher'])||'')}
+    });
+  }
 
-  return {ok:true,sheet,records:records.length,DJX3:records.filter(r=>r.station==='DJX3').length,DJX4:records.filter(r=>r.station==='DJX4').length};
-});
+  await replaceLogRecords(week,records);
+  await db.collection('generations').doc(week).set({
+    logSource:'Google Sheets',logRecords:records.length,logInfraRecords:records.filter(r=>r.kind==='LOG_INFRA').length,
+    logRescueRecords:records.filter(r=>r.kind==='RESCUE').length,logImportedAt:FieldValue.serverTimestamp()
+  },{merge:true});
+
+  return {ok:true,week,sheet:rescueInfo.sheet,records:records.length,infra:records.filter(r=>r.kind==='LOG_INFRA').length,rescues:records.filter(r=>r.kind==='RESCUE').length,DJX3:records.filter(r=>r.station==='DJX3').length,DJX4:records.filter(r=>r.station==='DJX4').length};
+}
+
+async function handler(request){
+  if(!request.auth)throw new HttpsError('unauthenticated','Acceso no preparado.');
+  const week=String(request.data?.week||'').trim();
+  if(!/^\d{4}-W\d{2}$/.test(week))throw new HttpsError('invalid-argument','Semana inválida.');
+  return importLogWeek(week);
+}
+
+exports.syncLogWeek = onCall({region:'us-east1',timeoutSeconds:180,memory:'512MiB'},handler);
+// Compatibilidad con HOME anterior.
+exports.syncHomeRescues = onCall({region:'us-east1',timeoutSeconds:180,memory:'512MiB'},handler);
