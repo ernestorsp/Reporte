@@ -107,6 +107,10 @@ function buildPdf({name,transporterId,email,week,station,records,summary,scoring
     rows.push({label:'Packages Delivered',detail:`${summary.packages} x ${Number(scoring.packages||0)}`,points:summary.packages*Number(scoring.packages||0)});
     for(const r of records.filter(x=>x.kind!=='OVERVIEW')){
       let label=r.kind||'Event'; let detail=r.label||'';
+      if(r.kind==='INFRACTION'){
+        label=clean(r.label)||'Safety Violation';
+        detail='Safety Violation · Metric Type';
+      }
       if(r.kind==='RESCUE')detail=`Stops ${Number(r.extra?.stops||0)} + Packages ${Number(r.extra?.packages||0)} | Affects ${clean(r.extra?.affects)||'-'}`;
       if(r.kind==='LOG_INFRA')detail=`${clean(r.extra?.category||r.label)} | Affects ${clean(r.extra?.affects)||'-'}`;
       rows.push({label,date:clean(r.date),detail,points:scoreRecord(r,scoring)});
