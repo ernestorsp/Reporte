@@ -141,22 +141,27 @@ async function loadScoring(){
   return {...DEFAULT_SCORING,...(s.exists?s.data():{})};
 }
 
-async function loadDriver(week,station,transporterId){
+async function loadDriver(week,station,transporterId,{requireEmail=true}={}){
   const snap=await db.collection('records').where('week','==',week).where('station','==',station).get();
   const records=snap.docs.map(d=>d.data()).filter(r=>clean(r.transporterId)===transporterId || clean(r.driverKey)===transporterId);
   if(!records.some(r=>r.kind==='OVERVIEW'))throw new HttpsError('not-found','No encontré el reporte del driver para esa semana.');
   const overview=records.find(r=>r.kind==='OVERVIEW');
   const directory=await db.collection('driverDirectory').doc(transporterId).get();
   const email=clean(directory.exists?directory.data()?.email:'');
-  if(!email)throw new HttpsError('failed-precondition','Este driver no tiene email guardado en Directorio.');
+  if(requireEmail&&!email)throw new HttpsError('failed-precondition','Este driver no tiene email guardado en Directorio.');
   return {records,name:clean(overview.driverName),email};
 }
 
-async function sendOne({week,station,transporterId}){
+async function renderOne({week,station,transporterId,requireEmail=true}){
   const scoring=await loadScoring();
-  const {records,name,email}=await loadDriver(week,station,transporterId);
+  const {records,name,email}=await loadDriver(week,station,transporterId,{requireEmail});
   const summary=summarize(records,scoring);
   const pdf=await buildPdf({name,transporterId,email,week,station,records,summary,scoring});
+  return {pdf,name,email,summary};
+}
+
+async function sendOne({week,station,transporterId}){
+  const {pdf,name,email,summary}=await renderOne({week,station,transporterId,requireEmail:true});
   const {user,tx}=transporter();
   await tx.sendMail({
     from:`"AAXI Xpress" <${user}>`,to:email,
@@ -167,6 +172,14 @@ async function sendOne({week,station,transporterId}){
   await db.collection('reportSends').doc(`${week}_${station}_${transporterId}`).set({week,station,transporterId,email,sent:true,sentAt:FieldValue.serverTimestamp(),delivery:'email_pdf'},{merge:true});
   return {ok:true,email,name,total:summary.total};
 }
+
+exports.previewDriverReport = onCall({region:'us-east1',timeoutSeconds:120,memory:'512MiB'},async request=>{
+  if(!request.auth)throw new HttpsError('unauthenticated','Acceso no preparado.');
+  const week=clean(request.data?.week),station=clean(request.data?.station).toUpperCase(),transporterId=clean(request.data?.transporterId);
+  if(!/^\d{4}-W\d{2}$/.test(week)||!['DJX3','DJX4'].includes(station)||!transporterId)throw new HttpsError('invalid-argument','Datos del reporte inválidos.');
+  const {pdf,name,email,summary}=await renderOne({week,station,transporterId,requireEmail:false});
+  return {ok:true,name,email,total:summary.total,fileName:`AAXI_Xpress_${week}_${transporterId}.pdf`,pdfBase64:pdf.toString('base64')};
+});
 
 exports.sendDriverReport = onCall({region:'us-east1',timeoutSeconds:120,memory:'512MiB',secrets:[REPORT_EMAIL,REPORT_EMAIL_APP_PASSWORD]},async request=>{
   if(!request.auth)throw new HttpsError('unauthenticated','Acceso no preparado.');
