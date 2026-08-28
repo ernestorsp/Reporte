@@ -1,6 +1,7 @@
 import { initializeApp, getApps } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js';
 import { getFirestore, collection, query, where, getDocs, doc, getDoc } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
+import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js';
 
 const config={
   apiKey:'AIzaSyBhJpu2AQ4AcdAaKcq-U-BfJQlH-oFw_vg',
@@ -13,6 +14,8 @@ const config={
 const app=getApps()[0]||initializeApp(config);
 const auth=getAuth(app);
 const db=getFirestore(app);
+const functions=getFunctions(app,'us-east1');
+const syncHomeRescues=httpsCallable(functions,'syncHomeRescues');
 const DEFAULT_SCORING={packages:.15,rescueYes:-.2,rescuePositive:0,ncns:0,co:0,lateMorning:0,complaints:0,safety:0,pickups:0,dsb:0,dvic:0,otherInfra:0};
 let authReady=false,lastWeek='';
 
@@ -23,6 +26,7 @@ function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 function num(v){const n=Number(v);return Number.isFinite(n)?n:0;}
 function fmt(v){const n=Math.round(num(v)*100)/100;return `${n>0?'+':''}${n.toFixed(2)}`;}
 function lower(v){return String(v??'').trim().toLowerCase();}
+function norm(v){return lower(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();}
 function cat(v){const s=String(v||'').trim().toUpperCase().replace(/[_-]+/g,' ').replace(/\s+/g,' ');if(s==='NCNS'||s.includes('NO CALL NO SHOW'))return'NCNS';if(s==='CO'||s==='CALL OUT'||s==='CALLOUT')return'CO';if(s.includes('LATE MORNING'))return'LATE_MORNING';return'OTHER';}
 
 function scoreRecord(r,s){
@@ -42,36 +46,55 @@ function scoreRecord(r,s){
   return 0;
 }
 
-function aggregate(records,s){
-  const map=new Map();
+function aggregateDrivers(records,s){
+  const map=new Map(),byName=new Map();
   for(const r of records.filter(x=>x.kind==='OVERVIEW')){
     const key=String(r.driverKey||r.transporterId||r.driverName||'').trim();if(!key)continue;
-    map.set(key,{key,name:String(r.driverName||'').trim(),station:r.station,packages:num(r.extra?.packages),points:num(r.extra?.packages)*num(s.packages),complaints:0,rescueCount:0,rescueStops:0,rescuePackages:0});
+    const d={key,name:String(r.driverName||'').trim(),station:r.station,packages:num(r.extra?.packages),points:num(r.extra?.packages)*num(s.packages)};
+    map.set(key,d);const n=norm(d.name);if(n)byName.set(`${r.station}|${n}`,d);
   }
   for(const r of records.filter(x=>x.kind!=='OVERVIEW')){
-    const key=String(r.driverKey||r.transporterId||'').trim(),d=map.get(key);if(!d)continue;
+    const key=String(r.driverKey||r.transporterId||'').trim();
+    const d=map.get(key)||byName.get(`${r.station}|${norm(r.driverName)}`);if(!d)continue;
     d.points+=scoreRecord(r,s);
-    if(r.kind==='COMPLAINT')d.complaints++;
-    if(r.kind==='RESCUE'&&lower(r.extra?.affects)==='yes'){
-      d.rescueCount++;d.rescueStops+=num(r.extra?.stops);d.rescuePackages+=num(r.extra?.packages);
-    }
   }
   return [...map.values()].map(d=>({...d,points:Math.round(d.points*100)/100}));
+}
+
+function groupComplaints(records){
+  const m=new Map();
+  for(const r of records.filter(x=>x.kind==='COMPLAINT'||x.sourceType==='CDF'&&x.kind==='COMPLAINT')){
+    const name=String(r.driverName||'').trim();if(!name)continue;
+    const k=`${r.station}|${norm(name)}`;
+    if(!m.has(k))m.set(k,{name,station:r.station,complaints:0});
+    m.get(k).complaints++;
+  }
+  return [...m.values()].sort((a,b)=>b.complaints-a.complaints||a.name.localeCompare(b.name)).slice(0,10);
+}
+
+function groupRescues(records,station){
+  const m=new Map();
+  for(const r of records.filter(x=>x.kind==='RESCUE'&&x.station===station&&lower(x.extra?.affects)==='yes')){
+    const name=String(r.driverName||'').trim();if(!name)continue;
+    const k=norm(name);
+    if(!m.has(k))m.set(k,{name,station,rescueCount:0,rescueStops:0,rescuePackages:0});
+    const d=m.get(k);d.rescueCount++;d.rescueStops+=num(r.extra?.stops);d.rescuePackages+=num(r.extra?.packages);
+  }
+  return [...m.values()].sort((a,b)=>b.rescueCount-a.rescueCount||(b.rescueStops+b.rescuePackages)-(a.rescueStops+a.rescuePackages)).slice(0,5);
 }
 
 function rankRows(list,valueKey,valueLabel,kind='good'){
   if(!list.length)return '<div class="home-empty">Sin datos para esta semana.</div>';
   return list.map((d,i)=>`<div class="home-rank-row"><div class="home-rank-num">${i+1}</div><div class="home-rank-driver"><b>${esc(d.name)}</b><span>${esc(d.station||'')}</span></div><div class="home-rank-value ${kind}"><b>${esc(valueKey(d))}</b><span>${esc(valueLabel)}</span></div></div>`).join('');
 }
-
 function stationTop(drivers,station){return drivers.filter(d=>d.station===station).sort((a,b)=>b.points-a.points||b.packages-a.packages).slice(0,10);}
-function rescueTop(drivers,station){return drivers.filter(d=>d.station===station&&d.rescueCount>0).sort((a,b)=>b.rescueCount-a.rescueCount||(b.rescueStops+b.rescuePackages)-(a.rescueStops+a.rescuePackages)).slice(0,5);}
 
 async function refreshHome(){
   const root=document.getElementById('homeDashboard');if(!root||!authReady)return;
   const w=week();if(!w)return;lastWeek=w;
-  root.innerHTML='<div class="home-loading">Cargando dashboard...</div>';
+  root.innerHTML='<div class="home-loading">Actualizando LOG y cargando dashboard...</div>';
   try{
+    try{await syncHomeRescues({week:w});}catch(syncErr){console.warn('No pude refrescar RESCUE_LOG:',syncErr);}
     const [snap,scoreSnap]=await Promise.all([
       getDocs(query(collection(db,'records'),where('week','==',w))),
       getDoc(doc(db,'settings','scoring'))
@@ -79,24 +102,24 @@ async function refreshHome(){
     if(w!==week())return;
     const records=snap.docs.map(d=>d.data());
     const scoring={...DEFAULT_SCORING,...(scoreSnap.exists()?scoreSnap.data():{})};
-    const drivers=aggregate(records,scoring);
+    const drivers=aggregateDrivers(records,scoring);
     const t3=stationTop(drivers,'DJX3'),t4=stationTop(drivers,'DJX4');
-    const complaints=drivers.filter(d=>d.complaints>0).sort((a,b)=>b.complaints-a.complaints||a.name.localeCompare(b.name)).slice(0,10);
-    const r3=rescueTop(drivers,'DJX3'),r4=rescueTop(drivers,'DJX4');
-    const totalDrivers=drivers.length,totalComplaints=drivers.reduce((a,d)=>a+d.complaints,0),totalRescues=drivers.reduce((a,d)=>a+d.rescueCount,0);
+    const complaints=groupComplaints(records);
+    const r3=groupRescues(records,'DJX3'),r4=groupRescues(records,'DJX4');
+    const totalDrivers=drivers.length,totalComplaints=records.filter(r=>r.kind==='COMPLAINT').length,totalRescues=records.filter(r=>r.kind==='RESCUE'&&lower(r.extra?.affects)==='yes').length;
     root.innerHTML=`
       <div class="home-hero">
         <div><div class="home-eyebrow">AAXI XPRESS · ${esc(w)}</div><h2>Weekly Performance Center</h2><p>Resumen ejecutivo de DJX3 y DJX4 basado en el reporte generado de la semana.</p></div>
-        <div class="home-kpis"><div><b>${totalDrivers}</b><span>Drivers</span></div><div><b>${totalComplaints}</b><span>Complaints</span></div><div><b>${totalRescues}</b><span>Rescates que afectan</span></div></div>
+        <div class="home-kpis"><div><b>${totalDrivers}</b><span>Drivers</span></div><div><b>${totalComplaints}</b><span>Complaints CDF</span></div><div><b>${totalRescues}</b><span>Rescates Affects = Yes</span></div></div>
       </div>
       <div class="home-section-title"><div><span class="home-section-kicker">01 · PERFORMANCE</span><h3>Top drivers por estación</h3></div><span class="home-pill">Ordenado por puntos</span></div>
       <div class="home-grid-two">
         <div class="home-card"><div class="home-card-head"><div><span>DJX3</span><h4>Top 10 Drivers</h4></div><div class="home-medal">🏆</div></div>${rankRows(t3,d=>fmt(d.points),'Puntos','good')}</div>
         <div class="home-card"><div class="home-card-head"><div><span>DJX4</span><h4>Top 10 Drivers</h4></div><div class="home-medal">🏆</div></div>${rankRows(t4,d=>fmt(d.points),'Puntos','good')}</div>
       </div>
-      <div class="home-section-title"><div><span class="home-section-kicker danger">02 · ATTENTION</span><h3>Complaints · ambas estaciones</h3></div><span class="home-pill danger">Top 10</span></div>
+      <div class="home-section-title"><div><span class="home-section-kicker danger">02 · ATTENTION</span><h3>Complaints · ambas estaciones</h3></div><span class="home-pill danger">CDF · Top 10</span></div>
       <div class="home-card home-wide"><div class="home-card-head"><div><span>DJX3 + DJX4</span><h4>Drivers con más complaints</h4></div><div class="home-medal">⚠️</div></div>${rankRows(complaints,d=>String(d.complaints),'Complaints','bad')}</div>
-      <div class="home-section-title"><div><span class="home-section-kicker danger">03 · RESCUES</span><h3>Drivers que más rescates reciben</h3></div><span class="home-pill danger">Solo Affects = Yes</span></div>
+      <div class="home-section-title"><div><span class="home-section-kicker danger">03 · RESCUES</span><h3>Drivers que más rescates reciben</h3></div><span class="home-pill danger">RESCUE_LOG · Affects = Yes</span></div>
       <div class="home-grid-two">
         <div class="home-card"><div class="home-card-head"><div><span>DJX3</span><h4>Top 5 rescates negativos</h4></div><div class="home-medal">↓</div></div>${rankRows(r3,d=>String(d.rescueCount),'Rescates recibidos','bad')}<div class="home-footnote">Desempate por Stops + Packages recibidos.</div></div>
         <div class="home-card"><div class="home-card-head"><div><span>DJX4</span><h4>Top 5 rescates negativos</h4></div><div class="home-medal">↓</div></div>${rankRows(r4,d=>String(d.rescueCount),'Rescates recibidos','bad')}<div class="home-footnote">Desempate por Stops + Packages recibidos.</div></div>
