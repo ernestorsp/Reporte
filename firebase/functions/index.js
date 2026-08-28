@@ -187,8 +187,8 @@ function normalize(rows,meta){
 
     if(meta.type==='SAFETY'){
       const date=get(row,idx,['date station local time','date (station local time)','date']);
-      const metric=String(get(row,idx,['metric type'])||'').trim();
-      const metricSubtype=String(get(row,idx,['metric subtype','metric sub type','metric sub-type'])||'').trim();
+      const metric=String(row[7]??'').trim();
+      const metricSubtype=String(row[8]??'').trim();
       if(metric)out.push(base(meta,key,name,transporterId,'INFRACTION',date,metric,{metricType:metric,metricSubtype}));
     }else if(meta.type==='CDF'){
       const date=get(row,idx,['delivery date','date']),details=String(get(row,idx,['feedback details'])||'').trim();
