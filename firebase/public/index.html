@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Reporte de Drivers</title>
   <link rel="stylesheet" href="styles.css?v=20260828-1">
+  <link rel="stylesheet" href="directory.css?v=20260828-1">
 </head>
 <body>
 <div class="shell">
@@ -15,6 +16,7 @@
       <button data-page="uploads">+ Archivos</button>
       <button data-page="reports">Reportes</button>
       <button data-page="points">Puntos</button>
+      <button data-page="directory">Directorio</button>
       <button data-page="DJX3">DJX3</button>
       <button data-page="DJX4">DJX4</button>
     </div>
@@ -79,6 +81,35 @@
       </div>
     </section>
 
+    <section id="page-directory" class="page">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <h3 style="margin-bottom:6px">Directorio de drivers</h3>
+            <div class="muted">Guarda emails y datos de contacto usando TransporterID como identificador.</div>
+          </div>
+          <div>
+            <input id="directoryFile" type="file" accept=".csv" hidden>
+            <button class="btn primary" id="directoryUpdateBtn" onclick="document.getElementById('directoryFile').click()">Actualizar desde CSV</button>
+          </div>
+        </div>
+        <div class="directory-note">La actualización agrega drivers nuevos y actualiza los existentes. También puedes cambiar un email directamente y pulsar Guardar.</div>
+        <div class="directory-toolbar">
+          <div class="directory-filters">
+            <input id="directorySearch" type="search" placeholder="Buscar driver, ID o email">
+            <select id="directoryStatus"><option value="ALL">Todos</option><option value="ACTIVE">Activos</option><option value="INACTIVE">Inactivos</option></select>
+          </div>
+          <div id="directoryCount" class="muted">0 drivers guardados</div>
+        </div>
+        <div class="directory-wrap">
+          <div class="directory-table">
+            <div class="directory-header"><span>Driver</span><span>Email</span><span>Teléfono personal</span><span>Teléfono trabajo</span><span>Status</span><span>Acción</span></div>
+            <div id="directoryRows"><div class="empty">Abre Directorio para cargar los drivers.</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section id="page-DJX3" class="page">
       <div class="card">
         <div class="station-head"><div><h3>DJX3</h3><div class="muted station-week" data-station-week="DJX3"></div></div><div class="muted station-count" data-station-count="DJX3"></div></div>
@@ -96,5 +127,6 @@
 </div>
 <div class="toast" id="toast"></div>
 <script type="module" src="app.js?v=20260828-1"></script>
+<script type="module" src="directory.js?v=20260828-1"></script>
 </body>
 </html>
