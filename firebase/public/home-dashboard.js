@@ -22,7 +22,7 @@ let authReady=false,lastWeek='';
 onAuthStateChanged(auth,u=>{authReady=!!u;if(u)refreshHome();});
 
 function week(){return document.getElementById('week')?.value||'';}
-function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[c]));}
 function num(v){const n=Number(v);return Number.isFinite(n)?n:0;}
 function fmt(v){const n=Math.round(num(v)*100)/100;return `${n>0?'+':''}${n.toFixed(2)}`;}
 function lower(v){return String(v??'').trim().toLowerCase();}
@@ -135,11 +135,13 @@ async function refreshHome(){
     const t3=stationTop(drivers,'DJX3'),t4=stationTop(drivers,'DJX4');
     const complaints=groupComplaints(records,roster);
     const r3=groupRescues(records,'DJX3',roster),r4=groupRescues(records,'DJX4',roster);
-    const totalDrivers=drivers.length,totalComplaints=records.filter(r=>r.kind==='COMPLAINT').length,totalRescues=records.filter(r=>r.kind==='RESCUE'&&lower(r.extra?.affects)==='yes').length;
+    const totalDrivers=drivers.length;
+    const totalComplaints=records.filter(r=>r.kind==='COMPLAINT').length;
+    const totalSafety=records.filter(r=>r.kind==='INFRACTION'&&r.sourceType==='SAFETY').length;
     root.innerHTML=`
       <div class="home-hero">
         <div><div class="home-eyebrow">AAXI XPRESS · ${esc(w)}</div><h2>Weekly Performance Center</h2><p>Resumen ejecutivo de DJX3 y DJX4 basado en el reporte generado de la semana.</p></div>
-        <div class="home-kpis"><div><b>${totalDrivers}</b><span>Drivers</span></div><div><b>${totalComplaints}</b><span>Complaints CDF</span></div><div><b>${totalRescues}</b><span>Rescates Affects = Yes</span></div></div>
+        <div class="home-kpis"><div><b>${totalDrivers}</b><span>Drivers</span></div><div><b>${totalComplaints}</b><span>Complaints CDF</span></div><div><b>${totalSafety}</b><span>Violaciones Safety</span></div></div>
       </div>
       <div class="home-section-title"><div><span class="home-section-kicker">01 · PERFORMANCE</span><h3>Top drivers por estación</h3></div><span class="home-pill">Ordenado por puntos</span></div>
       <div class="home-grid-two">
