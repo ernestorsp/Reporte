@@ -52,9 +52,7 @@ exports.deleteUpload = onCall({region:'us-east1'}, async (request) => {
   const station=String(request.data?.station||'').toUpperCase();
   const type=String(request.data?.type||'').toUpperCase();
   const validStandard=STANDARD_TYPES.includes(type)&&['DJX3','DJX4'].includes(station);
-  if(!/^\d{4}-W\d{2}$/.test(week)||!validStandard){
-    throw new HttpsError('invalid-argument','Documento inválido.');
-  }
+  if(!/^\d{4}-W\d{2}$/.test(week)||!validStandard) throw new HttpsError('invalid-argument','Documento inválido.');
 
   const id=`${week}_${station}_${type}`;
   const ref=db.collection('uploads').doc(id);
@@ -82,14 +80,10 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
   const uploads = snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.storagePath&&STANDARD_TYPES.includes(x.type));
   if (!uploads.length) throw new HttpsError('failed-precondition',`No hay documentos cargados para ${week}.`);
 
-  await db.collection('generations').doc(week).set({
-    week,status:'processing',startedAt:FieldValue.serverTimestamp(),
-    documentCount:uploads.length,error:''
-  },{merge:true});
+  await db.collection('generations').doc(week).set({week,status:'processing',startedAt:FieldValue.serverTimestamp(),documentCount:uploads.length,error:''},{merge:true});
 
   const prepared=[];
   const errors=[];
-
   for (const u of uploads) {
     try {
       const [buffer]=await getStorage().bucket().file(u.storagePath).download();
@@ -105,17 +99,15 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
   }
 
   let logRecords=[];
+  let logSheetName='';
   if(!errors.length){
     try{
       const driverMap=buildDriverStationMap(prepared);
-      const [infra,rescues]=await Promise.all([
-        fetchLogSheet('INFRA_LOG'),
-        fetchLogSheet('RESCUES_LOG')
-      ]);
-      logRecords=parseLogRows({infra,rescues},{week,fileName:'LOG · Google Sheets'},driverMap);
-    }catch(err){
-      errors.push(`LOG automático: ${err.message||String(err)}`);
-    }
+      const infra=await fetchLogSheet('INFRA_LOG');
+      const rescueResult=await fetchFirstLogSheet(['RESCUE_LOG','RESCUES_LOG']);
+      logSheetName=rescueResult.sheetName;
+      logRecords=parseLogRows({infra,rescues:rescueResult.rows},{week,fileName:`LOG · Google Sheets · ${logSheetName}`},driverMap);
+    }catch(err){errors.push(`LOG automático: ${err.message||String(err)}`);}
   }
 
   if (errors.length) {
@@ -127,10 +119,7 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
   for (const p of prepared) {
     await replaceRecords(week,p.upload.station,p.upload.type,p.records);
     totalRecords += p.records.length;
-    await db.collection('uploads').doc(p.upload.id).set({
-      status:'generated',rows:p.records.length,validation:'OK',error:'',
-      generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
-    },{merge:true});
+    await db.collection('uploads').doc(p.upload.id).set({status:'generated',rows:p.records.length,validation:'OK',error:'',generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()},{merge:true});
   }
 
   await deleteRecords(week,'DJX3','LOG');
@@ -144,13 +133,11 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
     const q=await db.collection('records').where('week','==',week).where('station','==',station).where('sourceType','==','OVERVIEW').get();
     driverCounts[station]=q.size;
   }
+  const logInfraCount=logRecords.filter(r=>r.kind==='LOG_INFRA').length;
+  const logRescueCount=logRecords.filter(r=>r.kind==='RESCUE').length;
 
-  await db.collection('generations').doc(week).set({
-    week,status:'generated',documentCount:prepared.length,records:totalRecords,driverCounts,
-    logSource:'Google Sheets',logRecords:logRecords.length,error:'',
-    generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
-  },{merge:true});
-  return {week,documents:prepared.length,records:totalRecords,driverCounts,logRecords:logRecords.length};
+  await db.collection('generations').doc(week).set({week,status:'generated',documentCount:prepared.length,records:totalRecords,driverCounts,logSource:'Google Sheets',logRescueSheet:logSheetName,logRecords:logRecords.length,logInfraCount,logRescueCount,error:'',generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()},{merge:true});
+  return {week,documents:prepared.length,records:totalRecords,driverCounts,logRecords:logRecords.length,logInfraCount,logRescueCount,logRescueSheet:logSheetName};
 });
 
 async function fetchLogSheet(sheetName){
@@ -167,10 +154,17 @@ async function fetchLogSheet(sheetName){
   const rows=Array.isArray(data.values)?data.values:[];
   if(!rows.length) throw new Error(`${sheetName} está vacío.`);
   const headersClean=rows[0].map(clean);
-  if(!headersClean.includes('date')||!headersClean.includes('driver')){
-    throw new Error(`${sheetName} no tiene las columnas Date y Driver.`);
-  }
+  if(!headersClean.includes('date')||!headersClean.includes('driver')) throw new Error(`${sheetName} no tiene las columnas Date y Driver.`);
   return rows;
+}
+
+async function fetchFirstLogSheet(names){
+  let lastErr=null;
+  for(const name of names){
+    try{return {sheetName:name,rows:await fetchLogSheet(name)};}
+    catch(err){lastErr=err;}
+  }
+  throw lastErr||new Error('No encontré la hoja de rescates en LOG.');
 }
 
 function parseFile(buffer,fileName){
@@ -215,11 +209,7 @@ function normalize(rows,meta){
       if(!name || packages===0) continue;
       const transporterId=String(get(row,idx,['transporter id','transporterid','transporter_id'])||'').trim();
       const key=driverKey(name,transporterId); if(!key)continue;
-      out.push(base(meta,key,name,transporterId,'OVERVIEW','','',{
-        standing:get(row,idx,['overall standing']),
-        overallScore:num(get(row,idx,['overall score'])),
-        packages
-      }));
+      out.push(base(meta,key,name,transporterId,'OVERVIEW','','',{standing:get(row,idx,['overall standing']),overallScore:num(get(row,idx,['overall score'])),packages}));
       continue;
     }
 
@@ -233,9 +223,12 @@ function normalize(rows,meta){
       if(metric)out.push(base(meta,key,name,transporterId,'INFRACTION',date,metric));
     } else if(meta.type==='CDF'){
       const date=get(row,idx,['delivery date','date']);
-      const details=get(row,idx,['feedback details']);
-      const skip=new Set(['week','delivery associate','driver','transporter id','transporterid','tracking id','delivery group id','feedback details','delivery date','station']);
-      cleaned.forEach((h,i)=>{if(h&&!skip.has(h)&&truthy(row[i]))out.push(base(meta,key,name,transporterId,'COMPLAINT',date,headers[i],{details:String(details||'')}));});
+      const details=String(get(row,idx,['feedback details'])||'').trim();
+      const skip=new Set(['week','delivery associate','driver','transporter id','transporterid','transporter_id','tracking id','delivery group id','feedback details','delivery date','date','station']);
+      const categories=[];
+      cleaned.forEach((h,i)=>{if(h&&!skip.has(h)&&truthy(row[i]))categories.push(String(headers[i]||'').trim());});
+      const label=categories.length?categories.join(' · '):(details||'Customer Delivery Feedback');
+      out.push(base(meta,key,name,transporterId,'COMPLAINT',date,label,{details,categories}));
     } else if(meta.type==='DSB'){
       if(!truthy(get(row,idx,['impacts scorecard'])))continue;
       const date=get(row,idx,['delivery date','date']);
@@ -275,7 +268,6 @@ function buildDriverStationMap(prepared){
 
 function parseLogRows({infra,rescues},meta,driverMap){
   const out=[];
-
   if(infra.length){
     const idx=idxMap(infra[0]);
     for(const row of infra.slice(1)){
@@ -286,20 +278,9 @@ function parseLogRows({infra,rescues},meta,driverMap){
       if(!match)continue;
       const category=String(get(row,idx,['category'])||'').trim();
       const affects=String(get(row,idx,['affects'])||'').trim();
-      out.push(base(
-        {week:meta.week,station:match.station,type:'LOG',fileName:meta.fileName},
-        match.key,match.name,match.transporterId,'LOG_INFRA',date,category,
-        {
-          category,
-          severity:num(get(row,idx,['severity'])),
-          affects,
-          notes:String(get(row,idx,['notes'])||''),
-          dispatcher:String(get(row,idx,['dispatcher'])||'')
-        }
-      ));
+      out.push(base({week:meta.week,station:match.station,type:'LOG',fileName:meta.fileName},match.key,match.name,match.transporterId,'LOG_INFRA',date,category,{category,severity:num(get(row,idx,['severity'])),affects,notes:String(get(row,idx,['notes'])||''),dispatcher:String(get(row,idx,['dispatcher'])||'')}));
     }
   }
-
   if(rescues.length){
     const idx=idxMap(rescues[0]);
     for(const row of rescues.slice(1)){
@@ -309,65 +290,33 @@ function parseLogRows({infra,rescues},meta,driverMap){
       const match=driverMap.get(normalizeName(name));
       if(!match)continue;
       const affects=String(get(row,idx,['affects'])||'').trim();
-      out.push(base(
-        {week:meta.week,station:match.station,type:'LOG',fileName:meta.fileName},
-        match.key,match.name,match.transporterId,'RESCUE',date,'Rescue',
-        {
-          stops:num(get(row,idx,['stop','stops'])),
-          packages:num(get(row,idx,['packages'])),
-          affects,
-          notes:String(get(row,idx,['notes'])||''),
-          dispatcher:String(get(row,idx,['dispatcher'])||'')
-        }
-      ));
+      out.push(base({week:meta.week,station:match.station,type:'LOG',fileName:meta.fileName},match.key,match.name,match.transporterId,'RESCUE',date,'Rescue',{stops:num(get(row,idx,['stop','stops'])),packages:num(get(row,idx,['packages'])),affects,notes:String(get(row,idx,['notes'])||''),dispatcher:String(get(row,idx,['dispatcher'])||'')}));
     }
   }
   return out;
 }
 
-function dateBelongsToWeek(value,week){
-  const d=toDate(value);
-  if(!d)return false;
-  const {start,end}=amazonWeekBounds(week);
-  return d>=start&&d<=end;
-}
+function dateBelongsToWeek(value,week){const d=toDate(value);if(!d)return false;const {start,end}=amazonWeekBounds(week);return d>=start&&d<=end;}
 function toDate(value){
   if(value instanceof Date&&!Number.isNaN(value.getTime()))return value;
-  if(typeof value==='number'){
-    const p=XLSX.SSF.parse_date_code(value);
-    if(p)return new Date(p.y,p.m-1,p.d,12);
-  }
-  const d=new Date(String(value||''));
-  return Number.isNaN(d.getTime())?null:d;
+  if(typeof value==='number'){const p=XLSX.SSF.parse_date_code(value);if(p)return new Date(p.y,p.m-1,p.d,12);}
+  const d=new Date(String(value||''));return Number.isNaN(d.getTime())?null:d;
 }
 function amazonWeekBounds(key){
-  const m=String(key).match(/^(\d{4})-W(\d{2})$/);
-  if(!m)return{start:new Date(0),end:new Date(0)};
+  const m=String(key).match(/^(\d{4})-W(\d{2})$/);if(!m)return{start:new Date(0),end:new Date(0)};
   const year=Number(m[1]),week=Number(m[2]);
   const jan4=new Date(year,0,4,12),day=jan4.getDay()||7;
-  const monday=new Date(jan4);
-  monday.setDate(jan4.getDate()-(day-1)+7*(week-1));
-  const start=new Date(monday); start.setDate(monday.getDate()-1); start.setHours(0,0,0,0);
-  const end=new Date(start); end.setDate(start.getDate()+6); end.setHours(23,59,59,999);
+  const monday=new Date(jan4);monday.setDate(jan4.getDate()-(day-1)+7*(week-1));
+  const start=new Date(monday);start.setDate(monday.getDate()-1);start.setHours(0,0,0,0);
+  const end=new Date(start);end.setDate(start.getDate()+6);end.setHours(23,59,59,999);
   return{start,end};
 }
 
 async function deleteRecords(week,station,type){
   const existing=await db.collection('records').where('week','==',week).where('station','==',station).where('sourceType','==',type).get();
-  for(let i=0;i<existing.docs.length;i+=400){
-    const batch=db.batch();
-    existing.docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));
-    await batch.commit();
-  }
+  for(let i=0;i<existing.docs.length;i+=400){const batch=db.batch();existing.docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));await batch.commit();}
 }
 async function writeRecords(records){
-  for(let i=0;i<records.length;i+=400){
-    const batch=db.batch();
-    records.slice(i,i+400).forEach(r=>batch.set(db.collection('records').doc(),{...r,createdAt:FieldValue.serverTimestamp()}));
-    await batch.commit();
-  }
+  for(let i=0;i<records.length;i+=400){const batch=db.batch();records.slice(i,i+400).forEach(r=>batch.set(db.collection('records').doc(),{...r,createdAt:FieldValue.serverTimestamp()}));await batch.commit();}
 }
-async function replaceRecords(week,station,type,records){
-  await deleteRecords(week,station,type);
-  await writeRecords(records);
-}
+async function replaceRecords(week,station,type,records){await deleteRecords(week,station,type);await writeRecords(records);}
