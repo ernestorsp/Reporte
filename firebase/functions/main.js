@@ -1,3 +1,4 @@
 const core = require('./index.js');
 const email = require('./email-functions.js');
-module.exports = {...core, ...email};
+const homeLog = require('./home-log-sync.js');
+module.exports = {...core, ...email, ...homeLog};
