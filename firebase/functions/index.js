@@ -10,6 +10,7 @@ initializeApp();
 const db = getFirestore();
 
 const STANDARD_TYPES = ['OVERVIEW','SAFETY','CDF','DSB','PSB','DVIC'];
+const LOG_SHEET_ID = '1Hh-SaxsOQaBRadK7M1k-FWehlbi_s5CvZDAsluSF4ZU';
 const REQUIRED = {
   OVERVIEW: [['delivery associate'],['overall score'],['packages delivered']],
   SAFETY: [
@@ -49,8 +50,7 @@ exports.deleteUpload = onCall({region:'us-east1'}, async (request) => {
   const station=String(request.data?.station||'').toUpperCase();
   const type=String(request.data?.type||'').toUpperCase();
   const validStandard=STANDARD_TYPES.includes(type)&&['DJX3','DJX4'].includes(station);
-  const validLog=type==='LOG'&&station==='GLOBAL';
-  if(!/^\d{4}-W\d{2}$/.test(week)||(!validStandard&&!validLog)){
+  if(!/^\d{4}-W\d{2}$/.test(week)||!validStandard){
     throw new HttpsError('invalid-argument','Documento inválido.');
   }
 
@@ -65,12 +65,7 @@ exports.deleteUpload = onCall({region:'us-east1'}, async (request) => {
     }
   }
 
-  if(type==='LOG'){
-    await deleteRecords(week,'DJX3','LOG');
-    await deleteRecords(week,'DJX4','LOG');
-  }else{
-    await deleteRecords(week,station,type);
-  }
+  await deleteRecords(week,station,type);
   await ref.delete();
   await db.collection('generations').doc(week).set({status:'draft',updatedAt:FieldValue.serverTimestamp()},{merge:true});
   return {ok:true};
@@ -82,7 +77,7 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
   if (!/^\d{4}-W\d{2}$/.test(week)) throw new HttpsError('invalid-argument','Semana inválida.');
 
   const snap = await db.collection('uploads').where('week','==',week).get();
-  const uploads = snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.storagePath);
+  const uploads = snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.storagePath&&STANDARD_TYPES.includes(x.type));
   if (!uploads.length) throw new HttpsError('failed-precondition',`No hay documentos cargados para ${week}.`);
 
   await db.collection('generations').doc(week).set({
@@ -92,10 +87,8 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
 
   const prepared=[];
   const errors=[];
-  const regularUploads=uploads.filter(u=>u.type!=='LOG');
-  const logUploads=uploads.filter(u=>u.type==='LOG');
 
-  for (const u of regularUploads) {
+  for (const u of uploads) {
     try {
       const [buffer]=await getStorage().bucket().file(u.storagePath).download();
       const rows=parseFile(buffer,u.fileName || u.storagePath.split('/').pop());
@@ -109,15 +102,17 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
     }
   }
 
-  const driverMap=buildDriverStationMap(prepared);
-  for(const u of logUploads){
+  let logRecords=[];
+  if(!errors.length){
     try{
-      const [buffer]=await getStorage().bucket().file(u.storagePath).download();
-      const records=parseLogWorkbook(buffer,{week,fileName:u.fileName},driverMap);
-      prepared.push({upload:u,records,isGlobalLog:true});
+      const driverMap=buildDriverStationMap(prepared);
+      const [infra,rescues]=await Promise.all([
+        fetchLogSheet('INFRA_LOG'),
+        fetchLogSheet('RESCUES_LOG')
+      ]);
+      logRecords=parseLogRows({infra,rescues},{week,fileName:'LOG · Google Sheets'},driverMap);
     }catch(err){
-      errors.push(`LOG: ${err.message||String(err)}`);
-      await db.collection('uploads').doc(u.id).set({status:'error',error:String(err.message||err),updatedAt:FieldValue.serverTimestamp()},{merge:true});
+      errors.push(`LOG automático: ${err.message||String(err)}`);
     }
   }
 
@@ -128,30 +123,19 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
 
   let totalRecords=0;
   for (const p of prepared) {
-    if(p.isGlobalLog){
-      await deleteRecords(week,'DJX3','LOG');
-      await deleteRecords(week,'DJX4','LOG');
-      const byStation={
-        DJX3:p.records.filter(r=>r.station==='DJX3'),
-        DJX4:p.records.filter(r=>r.station==='DJX4')
-      };
-      await writeRecords(byStation.DJX3);
-      await writeRecords(byStation.DJX4);
-      totalRecords += p.records.length;
-      await db.collection('uploads').doc(p.upload.id).set({
-        status:'generated',rows:p.records.length,validation:'OK',error:'',
-        matchedDJX3:byStation.DJX3.length,matchedDJX4:byStation.DJX4.length,
-        generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
-      },{merge:true});
-    }else{
-      await replaceRecords(week,p.upload.station,p.upload.type,p.records);
-      totalRecords += p.records.length;
-      await db.collection('uploads').doc(p.upload.id).set({
-        status:'generated',rows:p.records.length,validation:'OK',error:'',
-        generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
-      },{merge:true});
-    }
+    await replaceRecords(week,p.upload.station,p.upload.type,p.records);
+    totalRecords += p.records.length;
+    await db.collection('uploads').doc(p.upload.id).set({
+      status:'generated',rows:p.records.length,validation:'OK',error:'',
+      generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
+    },{merge:true});
   }
+
+  await deleteRecords(week,'DJX3','LOG');
+  await deleteRecords(week,'DJX4','LOG');
+  await writeRecords(logRecords.filter(r=>r.station==='DJX3'));
+  await writeRecords(logRecords.filter(r=>r.station==='DJX4'));
+  totalRecords += logRecords.length;
 
   const driverCounts={};
   for(const station of ['DJX3','DJX4']){
@@ -160,11 +144,29 @@ exports.generateWeek = onCall({region:'us-east1', timeoutSeconds:540, memory:'1G
   }
 
   await db.collection('generations').doc(week).set({
-    week,status:'generated',documentCount:prepared.length,records:totalRecords,driverCounts,error:'',
+    week,status:'generated',documentCount:prepared.length,records:totalRecords,driverCounts,
+    logSource:'Google Sheets',logRecords:logRecords.length,error:'',
     generatedAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()
   },{merge:true});
-  return {week,documents:prepared.length,records:totalRecords,driverCounts};
+  return {week,documents:prepared.length,records:totalRecords,driverCounts,logRecords:logRecords.length};
 });
+
+async function fetchLogSheet(sheetName){
+  const url=`https://docs.google.com/spreadsheets/d/${LOG_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  const res=await fetch(url,{redirect:'follow'});
+  if(!res.ok) throw new Error(`No pude abrir ${sheetName} (${res.status}).`);
+  const text=await res.text();
+  if(!text||/<html/i.test(text)||/accounts\.google\.com/i.test(text)){
+    throw new Error(`No tengo acceso a ${sheetName}. Comparte el documento LOG para lectura mediante enlace.`);
+  }
+  const rows=parse(text,{skip_empty_lines:true,relax_column_count:true,bom:true});
+  if(!rows.length) throw new Error(`${sheetName} está vacío.`);
+  const headers=rows[0].map(clean);
+  if(!headers.includes('date')||!headers.includes('driver')){
+    throw new Error(`${sheetName} no devolvió las columnas Date y Driver. Revisa el acceso al documento LOG.`);
+  }
+  return rows;
+}
 
 function parseFile(buffer,fileName){
   if (/\.csv$/i.test(fileName)) return parse(buffer.toString('utf8'),{skip_empty_lines:true,relax_column_count:true});
@@ -266,13 +268,9 @@ function buildDriverStationMap(prepared){
   return map;
 }
 
-function parseLogWorkbook(buffer,meta,driverMap){
-  const wb=XLSX.read(buffer,{type:'buffer',cellDates:true});
-  const requiredSheets=['INFRA_LOG','RESCUES_LOG'];
-  for(const sh of requiredSheets) if(!wb.Sheets[sh]) throw new Error(`LOG.xlsx no contiene la hoja ${sh}.`);
+function parseLogRows({infra,rescues},meta,driverMap){
   const out=[];
 
-  const infra=XLSX.utils.sheet_to_json(wb.Sheets['INFRA_LOG'],{header:1,defval:'',raw:true});
   if(infra.length){
     const idx=idxMap(infra[0]);
     for(const row of infra.slice(1)){
@@ -297,7 +295,6 @@ function parseLogWorkbook(buffer,meta,driverMap){
     }
   }
 
-  const rescues=XLSX.utils.sheet_to_json(wb.Sheets['RESCUES_LOG'],{header:1,defval:'',raw:true});
   if(rescues.length){
     const idx=idxMap(rescues[0]);
     for(const row of rescues.slice(1)){
