@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Reporte de Drivers</title>
-  <link rel="stylesheet" href="styles.css?v=20260827-4">
+  <link rel="stylesheet" href="styles.css?v=20260828-1">
 </head>
 <body>
 <div class="shell">
@@ -36,7 +36,7 @@
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap">
           <div>
             <h3 style="margin-bottom:6px">Carga semanal</h3>
-            <div class="muted">Selecciona primero la semana de Amazon. Cada semana corre de domingo a sábado. Los archivos quedan pendientes hasta que pulses Generar reporte.</div>
+            <div class="muted">Selecciona primero la semana de Amazon. Cada semana corre de domingo a sábado. Los archivos quedan pendientes hasta que pulses Generar reporte. El LOG se consulta automáticamente.</div>
           </div>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <select id="week" class="week"></select>
@@ -70,7 +70,7 @@
         </div>
         <div class="score-note">
           <b>Reglas fijas:</b> Rescue con <b>Affects = No</b> siempre aparece en el detalle pero vale 0 puntos.
-          Los eventos del LOG se cruzan con los drivers activos del Overview de esa semana.
+          Los eventos del LOG se cruzan automáticamente con los drivers activos del Overview de esa semana.
         </div>
         <div class="score-table">
           <div class="score-header"><span>Métrica</span><span>Multiplicador</span><span>Efecto</span></div>
@@ -95,6 +95,6 @@
   </main>
 </div>
 <div class="toast" id="toast"></div>
-<script type="module" src="app.js?v=20260827-4"></script>
+<script type="module" src="app.js?v=20260828-1"></script>
 </body>
 </html>
