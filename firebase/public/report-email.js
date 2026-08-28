@@ -15,6 +15,7 @@ const app=getApps()[0]||initializeApp(config);
 const auth=getAuth(app);
 const db=getFirestore(app);
 const functions=getFunctions(app,'us-east1');
+const previewDriverReport=httpsCallable(functions,'previewDriverReport');
 const sendDriverReport=httpsCallable(functions,'sendDriverReport');
 const sendStationReports=httpsCallable(functions,'sendStationReports');
 const stationRoots=['DJX3','DJX4'];
@@ -22,6 +23,13 @@ const stationRoots=['DJX3','DJX4'];
 function selectedWeek(){return document.getElementById('week')?.value||'';}
 function waitForAuth(){return new Promise((resolve,reject)=>{if(auth.currentUser)return resolve(auth.currentUser);const off=onAuthStateChanged(auth,u=>{if(u){off();resolve(u);}},reject);});}
 function showMessage(msg){const t=document.getElementById('toast');if(t){t.textContent=msg;t.style.display='block';clearTimeout(window.__reportToast);window.__reportToast=setTimeout(()=>t.style.display='none',6000);}else alert(msg);}
+
+function base64ToBlob(base64,type='application/pdf'){
+  const binary=atob(base64);
+  const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return new Blob([bytes],{type});
+}
 
 async function getDirectory(transporterId){
   if(!transporterId)return null;
@@ -75,7 +83,7 @@ async function decorateStation(station){
 
     const actions=document.createElement('div');
     actions.className='report-actions';
-    actions.innerHTML=`<button class="report-detail-btn" type="button">Ver detalle</button>${email?'<button class="report-send-btn" type="button">Enviar PDF</button>':'<span class="email-missing">Sin email</span>'}`;
+    actions.innerHTML=`<button class="report-detail-btn" type="button">Ver detalle</button><button class="report-preview-btn" type="button">Ver PDF</button>${email?'<button class="report-send-btn" type="button">Enviar PDF</button>':'<span class="email-missing">Sin email</span>'}`;
 
     const panel=document.createElement('div');
     panel.className='driver-detail-panel';
@@ -87,13 +95,36 @@ async function decorateStation(station){
       e.currentTarget.textContent=open?'Ocultar detalle':'Ver detalle';
     });
 
+    const previewBtn=actions.querySelector('.report-preview-btn');
+    previewBtn?.addEventListener('click',async()=>{
+      const original=previewBtn.textContent;
+      previewBtn.disabled=true;previewBtn.textContent='Abriendo...';
+      const previewWindow=window.open('','_blank');
+      if(previewWindow)previewWindow.document.write('<title>Generando PDF...</title><p style="font-family:Arial;padding:24px">Generando PDF de AAXI Xpress...</p>');
+      try{
+        await waitForAuth();
+        const result=await previewDriverReport({week:selectedWeek(),station,transporterId});
+        const d=result.data||{};
+        if(!d.pdfBase64)throw new Error('No se recibió el PDF.');
+        const blob=base64ToBlob(d.pdfBase64);
+        const url=URL.createObjectURL(blob);
+        if(previewWindow)previewWindow.location.href=url;
+        else window.open(url,'_blank');
+        setTimeout(()=>URL.revokeObjectURL(url),120000);
+      }catch(err){
+        if(previewWindow)previewWindow.close();
+        console.error(err);
+        showMessage(err?.message||'No se pudo abrir el PDF.');
+      }finally{previewBtn.disabled=false;previewBtn.textContent=original;}
+    });
+
     const sendBtn=actions.querySelector('.report-send-btn');
     sendBtn?.addEventListener('click',async()=>{
       const original=sendBtn.textContent;
       sendBtn.disabled=true;sendBtn.textContent='Enviando...';
       try{
         await waitForAuth();
-        const result=await sendDriverReport({week,station,transporterId});
+        const result=await sendDriverReport({week:selectedWeek(),station,transporterId});
         status.innerHTML='<span class="sent-badge">✓ Enviado</span>';
         showMessage(`✓ PDF enviado a ${result.data?.email||email}`);
       }catch(err){
