@@ -18,10 +18,24 @@ function toDate(value){
     const p=XLSX.SSF.parse_date_code(value);
     if(p)return new Date(p.y,p.m-1,p.d,12);
   }
-  const d=new Date(String(value||''));
-  return Number.isNaN(d.getTime())?null:d;
+  const s=String(value??'').trim();
+  if(!s)return null;
+  let m=s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/);
+  if(m){
+    const d=Number(m[1]),mo=Number(m[2]),y=Number(m[3]);
+    const parsed=new Date(y,mo-1,d,12);
+    if(parsed.getFullYear()===y&&parsed.getMonth()===mo-1&&parsed.getDate()===d)return parsed;
+  }
+  m=s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
+  if(m){
+    const y=Number(m[1]),mo=Number(m[2]),d=Number(m[3]);
+    const parsed=new Date(y,mo-1,d,12);
+    if(parsed.getFullYear()===y&&parsed.getMonth()===mo-1&&parsed.getDate()===d)return parsed;
+  }
+  const parsed=new Date(s);
+  return Number.isNaN(parsed.getTime())?null:parsed;
 }
-function dateString(v){const d=toDate(v);return d?d.toISOString().slice(0,10):String(v??'').trim();}
+function dateString(v){const d=toDate(v);return d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`:String(v??'').trim();}
 function amazonWeekBounds(key){
   const m=String(key).match(/^(\d{4})-W(\d{2})$/);if(!m)return null;
   const year=Number(m[1]),week=Number(m[2]);
@@ -129,5 +143,4 @@ async function handler(request){
 }
 
 exports.syncLogWeek = onCall({region:'us-east1',timeoutSeconds:180,memory:'512MiB'},handler);
-// Compatibilidad con HOME anterior.
 exports.syncHomeRescues = onCall({region:'us-east1',timeoutSeconds:180,memory:'512MiB'},handler);
