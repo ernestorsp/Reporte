@@ -94,6 +94,10 @@ function buildPdf({name,transporterId,email,week,station,records,summary,scoring
         label='Rescue';
         detail=`Stops ${Number(r.extra?.stops||0)} · Packages ${Number(r.extra?.packages||0)} · Affects ${clean(r.extra?.affects)||'-'}`;
       }
+      if(r.kind==='COMPLAINT'){
+        label='COMPLAINT';
+        detail=clean(r.extra?.details||r.label)||'Customer Delivery Feedback';
+      }
       if(r.kind==='LOG_INFRA')detail=`${clean(r.extra?.category||r.label)} · Affects ${clean(r.extra?.affects)||'-'}`;
       rows.push({label,date:clean(r.date),detail,points:scoreRecord(r,scoring)});
     }
@@ -119,12 +123,16 @@ function transporter(){const user=REPORT_EMAIL.value(),pass=REPORT_EMAIL_APP_PAS
 async function loadScoring(){const s=await db.collection('settings').doc('scoring').get();return{...DEFAULT_SCORING,...(s.exists?s.data():{})};}
 
 async function loadDriver(week,station,transporterId,{requireEmail=true}={}){
-  const snap=await db.collection('records').where('week','==',week).where('station','==',station).get();
+  const snap=await db.collection('records').where('week','==',week).get();
   const all=snap.docs.map(d=>d.data());
-  const overview=all.find(r=>r.kind==='OVERVIEW'&&(clean(r.transporterId)===transporterId||clean(r.driverKey)===transporterId));
+  const overview=all.find(r=>r.kind==='OVERVIEW'&&r.station===station&&(clean(r.transporterId)===transporterId||clean(r.driverKey)===transporterId));
   if(!overview)throw new HttpsError('not-found','No encontré el reporte del driver para esa semana.');
   const overviewName=norm(overview.driverName);
-  const records=all.filter(r=>clean(r.transporterId)===transporterId||clean(r.driverKey)===transporterId||(overviewName&&norm(r.driverName)===overviewName));
+  const records=all.filter(r=>
+    clean(r.transporterId)===transporterId ||
+    clean(r.driverKey)===transporterId ||
+    (overviewName&&norm(r.driverName)===overviewName)
+  );
   const directory=await db.collection('driverDirectory').doc(transporterId).get();
   const email=clean(directory.exists?directory.data()?.email:'');
   if(requireEmail&&!email)throw new HttpsError('failed-precondition','Este driver no tiene email guardado en Directorio.');
