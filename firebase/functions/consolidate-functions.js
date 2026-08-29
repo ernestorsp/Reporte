@@ -2,7 +2,7 @@ const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
 const db = getFirestore();
-const VERSION = 1;
+const VERSION = 2;
 
 function clean(v){ return String(v ?? '').trim(); }
 function norm(v){
@@ -14,16 +14,18 @@ function identityMaps(records){
   const groups = new Map();
   const byTid = new Map();
   const byName = new Map();
+  const byKey = new Map();
 
   for(const r of records.filter(x=>x.kind==='OVERVIEW')){
     const tid=clean(r.transporterId);
     const nameKey=norm(r.driverName);
+    const driverKey=clean(r.driverKey);
     const id=tid ? `tid:${tid}` : `name:${nameKey}`;
     if(!id || id==='name:') continue;
 
     let g=groups.get(id);
     if(!g){
-      g={id,transporterId:tid,driverKey:clean(r.driverKey)||tid||nameKey.replace(/\s+/g,'_'),driverName:clean(r.driverName),totalPackages:0,stationPackages:{DJX3:0,DJX4:0},overviews:[]};
+      g={id,transporterId:tid,driverKey:driverKey||tid||nameKey.replace(/\s+/g,'_'),driverName:clean(r.driverName),totalPackages:0,stationPackages:{DJX3:0,DJX4:0},overviews:[]};
       groups.set(id,g);
     }
     if(!g.transporterId && tid) g.transporterId=tid;
@@ -33,6 +35,7 @@ function identityMaps(records){
     g.overviews.push(r);
     if(tid) byTid.set(tid,g);
     if(nameKey) byName.set(nameKey,g);
+    if(driverKey) byKey.set(driverKey,g);
   }
 
   for(const g of groups.values()){
@@ -44,12 +47,21 @@ function identityMaps(records){
     g.driverKey=clean(dominant?.driverKey)||g.driverKey;
     g.dominantOverview=dominant;
   }
-  return {groups,byTid,byName};
+  return {groups,byTid,byName,byKey};
 }
 
 function groupFor(r,maps){
   const tid=clean(r.transporterId);
   if(tid && maps.byTid.has(tid)) return maps.byTid.get(tid);
+
+  const key=clean(r.driverKey);
+  if(key && maps.byKey.has(key)) return maps.byKey.get(key);
+  if(key && maps.byTid.has(key)) return maps.byTid.get(key);
+
+  const rawName=clean(r.driverName);
+  if(rawName && maps.byTid.has(rawName)) return maps.byTid.get(rawName);
+  if(rawName && maps.byKey.has(rawName)) return maps.byKey.get(rawName);
+
   const nameKey=norm(r.driverName);
   if(nameKey && maps.byName.has(nameKey)) return maps.byName.get(nameKey);
   return null;
