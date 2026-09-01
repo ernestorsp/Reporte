@@ -13,6 +13,7 @@ const DEFAULT_SCORING = {packages:0.15,rescueYes:-0.20,rescuePositive:0,ncns:0,c
 function clean(v){return String(v??'').trim();}
 function lower(v){return clean(v).toLowerCase();}
 function norm(v){return lower(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();}
+function idNorm(v){return clean(v).toUpperCase().replace(/[^A-Z0-9]/g,'');}
 function round2(v){return Math.round((Number(v)||0)*100)/100;}
 function fmt(v){const n=round2(v);return `${n>0?'+':''}${n.toFixed(2)}`;}
 function canonicalCategory(v){const s=clean(v).toUpperCase().replace(/[_-]+/g,' ').replace(/\s+/g,' ');if(s==='NCNS'||s.includes('NO CALL NO SHOW'))return'NCNS';if(s==='CO'||s==='CALL OUT'||s==='CALLOUT')return'CO';if(s.includes('LATE MORNING'))return'LATE_MORNING';return'OTHER';}
@@ -125,14 +126,18 @@ async function loadScoring(){const s=await db.collection('settings').doc('scorin
 async function loadDriver(week,station,transporterId,{requireEmail=true}={}){
   const snap=await db.collection('records').where('week','==',week).get();
   const all=snap.docs.map(d=>d.data());
-  const overview=all.find(r=>r.kind==='OVERVIEW'&&r.station===station&&(clean(r.transporterId)===transporterId||clean(r.driverKey)===transporterId));
+  const targetId=idNorm(transporterId);
+  const overview=all.find(r=>r.kind==='OVERVIEW'&&r.station===station&&(idNorm(r.transporterId)===targetId||idNorm(r.driverKey)===targetId));
   if(!overview)throw new HttpsError('not-found','No encontré el reporte del driver para esa semana.');
   const overviewName=norm(overview.driverName);
-  const records=all.filter(r=>
-    clean(r.transporterId)===transporterId ||
-    clean(r.driverKey)===transporterId ||
-    (overviewName&&norm(r.driverName)===overviewName)
-  );
+  const overviewId=idNorm(overview.transporterId||overview.driverKey||transporterId);
+  const records=all.filter(r=>{
+    const rTid=idNorm(r.transporterId);
+    const rKey=idNorm(r.driverKey);
+    const rNameAsId=idNorm(r.driverName);
+    const sameName=overviewName&&norm(r.driverName)===overviewName;
+    return (overviewId&&(rTid===overviewId||rKey===overviewId||rNameAsId===overviewId)) || sameName;
+  });
   const directory=await db.collection('driverDirectory').doc(transporterId).get();
   const email=clean(directory.exists?directory.data()?.email:'');
   if(requireEmail&&!email)throw new HttpsError('failed-precondition','Este driver no tiene email guardado en Directorio.');
