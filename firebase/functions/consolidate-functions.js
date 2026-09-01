@@ -120,7 +120,9 @@ exports.consolidateGeneratedWeek = onDocumentWritten({region:'us-east1',document
   if(!after?.exists) return;
   const data=after.data()||{};
   if(data.status!=='generated') return;
-  if(Number(data.consolidatedVersion||0)>=VERSION) return;
+  const beforeData=event.data?.before?.exists ? (event.data.before.data()||{}) : {};
+  const becameGenerated=beforeData.status!=='generated';
+  if(!becameGenerated && Number(data.consolidatedVersion||0)>=VERSION) return;
 
   const week=event.params.week;
   const result=await consolidateWeek(week);
