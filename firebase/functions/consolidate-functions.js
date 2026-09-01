@@ -2,7 +2,7 @@ const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
 const db = getFirestore();
-const VERSION = 2;
+const VERSION = 3;
 
 function clean(v){ return String(v ?? '').trim(); }
 function norm(v){
