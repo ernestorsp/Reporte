@@ -1,7 +1,7 @@
 import {initializeApp,getApps} from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js';
 import {getAuth,onAuthStateChanged} from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js';
 import {getFirestore,collection,query,where,getDocs,doc,getDoc} from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
-import {buildDrivers,bonusDisplayList,normalizeBonus,num} from './bonus-engine.js?v=20260902-1';
+import {buildDrivers,bonusDisplayList,normalizeBonus,num} from './bonus-engine.js?v=20260902-3';
 const cfg={apiKey:'AIzaSyBhJpu2AQ4AcdAaKcq-U-BfJQlH-oFw_vg',authDomain:'reporte-c9c78.firebaseapp.com',projectId:'reporte-c9c78',storageBucket:'reporte-c9c78.firebasestorage.app',messagingSenderId:'332419212982',appId:'1:332419212982:web:4bcedf0fb8c25c75fba817'};
 const app=getApps()[0]||initializeApp(cfg),auth=getAuth(app),db=getFirestore(app);let ready=false,last='';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[c]));function week(){return document.getElementById('week')?.value||'';}
