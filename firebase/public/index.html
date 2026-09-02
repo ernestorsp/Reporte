@@ -11,22 +11,9 @@
 </head>
 <body>
 <div class="shell">
-  <aside class="side">
-    <div class="brand">REPORTE</div>
-    <div class="nav">
-      <button class="active" data-page="home">Home</button>
-      <button data-page="uploads">+ Archivos</button>
-      <button data-page="reports">Reportes</button>
-      <button data-page="points">Puntos</button>
-      <button data-page="directory">Directorio</button>
-      <button data-page="DJX3">DJX3</button>
-      <button data-page="DJX4">DJX4</button>
-    </div>
-  </aside>
+  <aside class="side"><div class="brand">REPORTE</div><div class="nav"><button class="active" data-page="home">Home</button><button data-page="uploads">+ Archivos</button><button data-page="reports">Reportes</button><button data-page="points">Puntos</button><button data-page="directory">Directorio</button><button data-page="DJX3">DJX3</button><button data-page="DJX4">DJX4</button></div></aside>
   <main class="main">
-    <div class="top">
-      <div><h1 id="title">Home</h1><div class="muted" id="subtitle">Histórico y reportes de drivers</div></div>
-    </div>
+    <div class="top"><div><h1 id="title">Home</h1><div class="muted" id="subtitle">Histórico y reportes de drivers</div></div></div>
     <section id="page-home" class="page active"><div id="homeDashboard" class="home-dashboard"><div class="home-loading">Cargando dashboard...</div></div></section>
     <section id="page-uploads" class="page"><div class="card"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap"><div><h3 style="margin-bottom:6px">Carga semanal</h3><div class="muted">Selecciona primero la semana de Amazon. Cada semana corre de domingo a sábado. Los archivos quedan pendientes hasta que pulses Generar reporte. El LOG se importa automáticamente al generar.</div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><select id="week" class="week"></select><button class="btn secondary" id="addFiles">+ Agregar archivos</button><button class="btn primary" id="generateReport">Generar reporte</button></div></div><div id="weekRange" class="muted" style="margin-top:12px;font-weight:700"></div><div id="weekProgress" class="muted" style="margin-top:6px"></div><div id="uploadGrid" class="grid2" style="margin-top:16px"></div><input id="fileInput" type="file" accept=".csv,.xls,.xlsx" multiple hidden></div></section>
     <section id="page-reports" class="page"><div class="card"><h3 style="margin-bottom:6px">Reportes por semana</h3><div class="muted">Cada fila corresponde a una semana generada. Puedes abrirla o borrarla con el cestico rojo.</div><div id="reportsList" style="margin-top:16px"><div class="empty">Cargando reportes...</div></div></div></section>
@@ -42,6 +29,5 @@
 <script type="module" src="report-email.js?v=20260828-3"></script>
 <script type="module" src="bonus-ui.js?v=20260902-1"></script>
 <script type="module" src="bonus-dashboard.js?v=20260902-1"></script>
-<script type="module" src="log-auto-sync.js?v=20260828-1"></script>
 </body>
 </html>
