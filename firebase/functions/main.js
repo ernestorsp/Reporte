@@ -2,4 +2,6 @@ const core = require('./index.js');
 const email = require('./email-functions.js');
 const homeLog = require('./home-log-sync.js');
 const consolidate = require('./consolidate-functions.js');
-module.exports = {...core, ...email, ...homeLog, ...consolidate};
+const bonusSchedule = require('./bonus-schedule-functions.js');
+const bonusReport = require('./bonus-report-functions.js');
+module.exports = {...core, ...email, ...homeLog, ...consolidate, ...bonusSchedule, ...bonusReport};
