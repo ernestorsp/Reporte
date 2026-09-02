@@ -51,6 +51,6 @@ exports.getHomeRescueSummary=onCall({region:'us-east1',timeoutSeconds:120,memory
     g.rescueCount++;g.stops+=num(get(row,idx,['stop','stops']));g.packages+=num(get(row,idx,['packages']));
   }
   const byStation={DJX3:[],DJX4:[]};for(const g of groups.values())byStation[g.station]?.push(g);
-  for(const st of ['DJX3','DJX4'])byStation[st].sort((a,b)=>b.rescueCount-a.rescueCount||(b.stops+b.packages)-(a.stops+a.packages)||a.name.localeCompare(b.name));
+  for(const st of ['DJX3','DJX4'])byStation[st].sort((a,b)=>b.stops-a.stops||b.packages-a.packages||b.rescueCount-a.rescueCount||a.name.localeCompare(b.name));
   return {week,start:`${bounds.start.getFullYear()}-${String(bounds.start.getMonth()+1).padStart(2,'0')}-${String(bounds.start.getDate()).padStart(2,'0')}`,end:`${bounds.end.getFullYear()}-${String(bounds.end.getMonth()+1).padStart(2,'0')}-${String(bounds.end.getDate()).padStart(2,'0')}`,DJX3:byStation.DJX3.slice(0,5),DJX4:byStation.DJX4.slice(0,5)};
 });
